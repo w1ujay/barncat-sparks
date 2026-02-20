@@ -20,13 +20,14 @@ type midiEvent struct {
 
 // MIDIDriver connects to a MIDI device and dispatches actions to the K4.
 type MIDIDriver struct {
-	mu     sync.Mutex
-	cat    *CATClient
-	config *MIDIConfig
-	index  map[midiKey]*MIDIMapping
-	pttOn  bool
-	done   chan struct{}
-	events chan midiEvent
+	mu        sync.Mutex
+	closeOnce sync.Once
+	cat       *CATClient
+	config    *MIDIConfig
+	index     map[midiKey]*MIDIMapping
+	pttOn     bool
+	done      chan struct{}
+	events    chan midiEvent
 
 	// VFO tuning state (accessed only from event loop goroutine)
 	vfoFreq    int
@@ -59,5 +60,7 @@ func (d *MIDIDriver) Run() error {
 
 // Close shuts down the MIDI driver.
 func (d *MIDIDriver) Close() {
-	close(d.done)
+	d.closeOnce.Do(func() {
+		close(d.done)
+	})
 }

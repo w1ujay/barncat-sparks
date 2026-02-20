@@ -293,16 +293,19 @@ func (g *GUI) rebuildMappingTable() {
 	}
 }
 
-// onActionChanged updates the opts column when the action dropdown changes.
-func (g *GUI) onActionChanged(row *MappingRow, label string) {
-	// Find the action name from label
-	actionName := ""
+// actionNameFromLabel returns the action registry key for a given display label.
+func actionNameFromLabel(label string) string {
 	for name, def := range ActionRegistry {
 		if def.Label == label {
-			actionName = name
-			break
+			return name
 		}
 	}
+	return ""
+}
+
+// onActionChanged updates the opts column when the action dropdown changes.
+func (g *GUI) onActionChanged(row *MappingRow, label string) {
+	actionName := actionNameFromLabel(label)
 	g.populateOpts(row, actionName, nil)
 	g.rebuildMappingTable()
 }
@@ -341,6 +344,7 @@ func (g *GUI) startLearn(row *MappingRow) {
 	// Cancel any existing learn
 	if g.learnCancel != nil {
 		close(g.learnCancel)
+		g.learnCancel = nil
 	}
 
 	g.learnRow = row
@@ -384,6 +388,7 @@ func (g *GUI) listenForLearn(row *MappingRow, cancel chan struct{}) {
 			row.learnBtn.SetText("Learn")
 			row.learnBtn.Enable()
 			g.learnRow = nil
+			g.learnCancel = nil
 			g.setStatus("MIDI Learn complete")
 			return
 		}
@@ -520,13 +525,7 @@ func (g *GUI) readUIIntoConfig() {
 func (g *GUI) rowToMappingEntry(row *MappingRow) MappingEntry {
 	entry := MappingEntry{}
 
-	// Find action name from label
-	for name, def := range ActionRegistry {
-		if def.Label == row.actionSelect.Selected {
-			entry.Action = name
-			break
-		}
-	}
+	entry.Action = actionNameFromLabel(row.actionSelect.Selected)
 
 	switch row.typeSelect.Selected {
 	case "CC":
@@ -537,6 +536,18 @@ func (g *GUI) rowToMappingEntry(row *MappingRow) MappingEntry {
 
 	fmt.Sscanf(row.channelEntry.Text, "%d", &entry.Channel)
 	fmt.Sscanf(row.numberEntry.Text, "%d", &entry.Number)
+	if entry.Channel < 0 {
+		entry.Channel = 0
+	}
+	if entry.Channel > 15 {
+		entry.Channel = 15
+	}
+	if entry.Number < 0 {
+		entry.Number = 0
+	}
+	if entry.Number > 127 {
+		entry.Number = 127
+	}
 
 	if len(row.optsWidgets) > 0 {
 		entry.Opts = make(map[string]interface{})
