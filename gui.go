@@ -6,6 +6,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -80,9 +81,15 @@ func RunGUI(configPath string) {
 	g.loadConfigIntoUI()
 
 	g.window.SetCloseIntercept(func() {
-		g.stopAll()
-		g.window.Close()
+		if g.config.MinimizeToTray && g.running {
+			g.window.Hide()
+		} else {
+			g.stopAll()
+			g.window.Close()
+		}
 	})
+
+	g.setupTray()
 
 	g.window.ShowAndRun()
 }
@@ -553,4 +560,23 @@ func (g *GUI) configPath() string {
 
 func (g *GUI) setStatus(msg string) {
 	g.statusLbl.SetText("Status: " + msg)
+}
+
+// setupTray configures the system tray menu.
+func (g *GUI) setupTray() {
+	if desk, ok := g.app.(desktop.App); ok {
+		menu := fyne.NewMenu("wk4",
+			fyne.NewMenuItem("Show", func() {
+				g.window.Show()
+			}),
+			fyne.NewMenuItem("Stop", func() {
+				g.stop()
+			}),
+			fyne.NewMenuItem("Quit", func() {
+				g.stopAll()
+				g.app.Quit()
+			}),
+		)
+		desk.SetSystemTrayMenu(menu)
+	}
 }
