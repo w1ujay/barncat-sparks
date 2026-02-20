@@ -141,3 +141,72 @@ func (c *CATClient) QuerySpeed() (int, error) {
 	}
 	return 0, fmt.Errorf("KS query timeout")
 }
+
+// SetFreqA sets VFO A frequency in Hz.
+func (c *CATClient) SetFreqA(hz int) error {
+	cmd := fmt.Sprintf("FA%011d;", hz)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetFreqB sets VFO B frequency in Hz.
+func (c *CATClient) SetFreqB(hz int) error {
+	cmd := fmt.Sprintf("FB%011d;", hz)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// GetFreqA queries VFO A frequency from the K4. Returns Hz.
+func (c *CATClient) GetFreqA() (int, error) {
+	if err := c.send("FA;"); err != nil {
+		return 0, err
+	}
+	select {
+	case resp := <-c.respCh:
+		if strings.HasPrefix(resp, "FA") {
+			var hz int
+			fmt.Sscanf(resp[2:], "%d", &hz)
+			return hz, nil
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+	return 0, fmt.Errorf("FA query timeout")
+}
+
+// SetVolume sets the K4 audio gain (0-255).
+func (c *CATClient) SetVolume(level int) error {
+	if level < 0 {
+		level = 0
+	}
+	if level > 255 {
+		level = 255
+	}
+	cmd := fmt.Sprintf("AG%03d;", level)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// BandUp moves to the next band.
+func (c *CATClient) BandUp() error {
+	log.Printf("CAT: BU;")
+	return c.send("BU;")
+}
+
+// BandDown moves to the previous band.
+func (c *CATClient) BandDown() error {
+	log.Printf("CAT: BD;")
+	return c.send("BD;")
+}
+
+// SelectVFO selects VFO A (0) or VFO B (1).
+func (c *CATClient) SelectVFO(ab int) error {
+	cmd := fmt.Sprintf("FT%d;", ab&1)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SwapVFO swaps VFO A and B.
+func (c *CATClient) SwapVFO() error {
+	log.Printf("CAT: SWT11;")
+	return c.send("SWT11;")
+}
