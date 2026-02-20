@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+const mimData = 0x3C3 // MIM_DATA (matches midi_windows.go)
+
+// midiEvent carries a raw MIDI message from the callback to the event loop.
+type midiEvent struct {
+	wMsg   uintptr
+	status byte
+	data1  byte
+	data2  byte
+}
+
 // MIDIDriver connects to a MIDI device and dispatches actions to the K4.
 type MIDIDriver struct {
 	mu     sync.Mutex
@@ -16,6 +26,7 @@ type MIDIDriver struct {
 	index  map[midiKey]*MIDIMapping
 	pttOn  bool
 	done   chan struct{}
+	events chan midiEvent
 
 	// VFO tuning state (accessed only from event loop goroutine)
 	vfoFreq    int
@@ -30,6 +41,7 @@ func NewMIDIDriver(cat *CATClient, config *MIDIConfig) *MIDIDriver {
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),
+		events: make(chan midiEvent, 64),
 	}
 }
 

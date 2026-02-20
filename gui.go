@@ -46,6 +46,10 @@ type GUI struct {
 	cat     *CATClient
 	wk      *Winkeyer
 	midi    *MIDIDriver
+
+	// MIDI Learn state
+	learnRow    *MappingRow
+	learnCancel chan struct{}
 }
 
 // MappingRow holds the widgets for a single mapping row.
@@ -321,11 +325,62 @@ func (g *GUI) populateOpts(row *MappingRow, actionName string, existingOpts map[
 }
 
 // startLearn starts MIDI learn mode for a row.
-// Placeholder — will be implemented in a later task.
 func (g *GUI) startLearn(row *MappingRow) {
+	if g.midi == nil {
+		g.setStatus("MIDI learn requires a running MIDI connection. Hit Start first.")
+		return
+	}
+
+	// Cancel any existing learn
+	if g.learnCancel != nil {
+		close(g.learnCancel)
+	}
+
+	g.learnRow = row
+	g.learnCancel = make(chan struct{})
 	row.learnBtn.SetText("Listening...")
 	row.learnBtn.Disable()
-	// TODO: Wire to MIDI event capture
+	g.setStatus("MIDI Learn: move a control or press a button on your MIDI device...")
+
+	go g.listenForLearn(row, g.learnCancel)
+}
+
+func (g *GUI) listenForLearn(row *MappingRow, cancel chan struct{}) {
+	// Read from the MIDI driver's event channel.
+	// During learn mode, normal MIDI dispatch is paused since we consume events.
+	for {
+		select {
+		case <-cancel:
+			return
+		case ev := <-g.midi.events:
+			if ev.wMsg != mimData {
+				continue
+			}
+			msgType := ev.status & 0xF0
+			channel := ev.status & 0x0F
+			number := ev.data1
+
+			// Only learn from CC and Note On events
+			if msgType != 0xB0 && msgType != 0x90 {
+				continue
+			}
+
+			// Update the row
+			switch msgType {
+			case 0xB0:
+				row.typeSelect.SetSelected("CC")
+			case 0x90:
+				row.typeSelect.SetSelected("Note On")
+			}
+			row.channelEntry.SetText(fmt.Sprintf("%d", channel))
+			row.numberEntry.SetText(fmt.Sprintf("%d", number))
+			row.learnBtn.SetText("Learn")
+			row.learnBtn.Enable()
+			g.learnRow = nil
+			g.setStatus("MIDI Learn complete")
+			return
+		}
+	}
 }
 
 // start connects all subsystems.
