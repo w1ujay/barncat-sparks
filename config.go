@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"go.bug.st/serial"
 )
 
 // AppConfig holds all wk4 settings, serialized to wk4-config.json.
@@ -72,4 +74,13 @@ func (c *AppConfig) ToMIDIConfig() *MIDIConfig {
 		}
 	}
 	return mc
+}
+
+// listSerialPorts returns available serial port names.
+func listSerialPorts() []string {
+	ports, err := serial.GetPortsList()
+	if err != nil {
+		return nil
+	}
+	return ports
 }
