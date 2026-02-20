@@ -1,0 +1,75 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+// AppConfig holds all wk4 settings, serialized to wk4-config.json.
+type AppConfig struct {
+	SerialPort     string         `json:"serial_port"`
+	CATAddress     string         `json:"cat_address"`
+	KeyerSpeed     int            `json:"keyer_speed"`
+	MIDIDevice     string         `json:"midi_device"`
+	MinimizeToTray bool           `json:"minimize_to_tray"`
+	Mappings       []MappingEntry `json:"mappings"`
+}
+
+// MappingEntry defines a single MIDI-to-action mapping in the config file.
+type MappingEntry struct {
+	Action  string                 `json:"action"`
+	Type    string                 `json:"type"`
+	Channel int                    `json:"channel"`
+	Number  int                    `json:"number"`
+	Opts    map[string]interface{} `json:"opts,omitempty"`
+}
+
+// DefaultAppConfig returns a config with sensible defaults.
+func DefaultAppConfig() *AppConfig {
+	return &AppConfig{
+		CATAddress: "localhost:9299",
+		KeyerSpeed: 25,
+	}
+}
+
+// LoadAppConfig reads an AppConfig from a JSON file.
+func LoadAppConfig(path string) (*AppConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var cfg AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// SaveAppConfig writes an AppConfig to a JSON file.
+func SaveAppConfig(path string, cfg *AppConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// ToMIDIConfig converts AppConfig mappings to the MIDIConfig format
+// used by the existing MIDI driver.
+func (c *AppConfig) ToMIDIConfig() *MIDIConfig {
+	mc := &MIDIConfig{
+		Device:   c.MIDIDevice,
+		Mappings: make([]MIDIMapping, len(c.Mappings)),
+	}
+	for i, m := range c.Mappings {
+		mc.Mappings[i] = MIDIMapping{
+			Type:    m.Type,
+			Channel: m.Channel,
+			Number:  m.Number,
+			Action:  m.Action,
+			Opts:    m.Opts,
+		}
+	}
+	return mc
+}
