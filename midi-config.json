@@ -1,0 +1,14 @@
+{
+  "device": "DJ2GO2",
+  "mappings": [
+    { "type": "cc",      "channel": 0, "number": 1,  "action": "vfo_tune", "opts": { "step": 10 } },
+    { "type": "cc",      "channel": 0, "number": 7,  "action": "volume" },
+    { "type": "cc",      "channel": 0, "number": 8,  "action": "speed" },
+    { "type": "note_on", "channel": 0, "number": 36, "action": "ptt" },
+    { "type": "note_on", "channel": 0, "number": 37, "action": "band_down" },
+    { "type": "note_on", "channel": 0, "number": 38, "action": "band_up" },
+    { "type": "note_on", "channel": 0, "number": 39, "action": "vfo_a" },
+    { "type": "note_on", "channel": 0, "number": 40, "action": "vfo_b" },
+    { "type": "note_on", "channel": 0, "number": 41, "action": "vfo_swap" }
+  ]
+}
