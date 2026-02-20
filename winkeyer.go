@@ -15,7 +15,7 @@ const (
 	BufferSize    = 64
 	XoffThreshold = 42 // Set XOFF when buffer >= 2/3 full
 	XonThreshold  = 20 // Clear XOFF when buffer drops below this
-	KYChunkSize   = 24 // Max chars per KY command to K4
+	KYChunkSize   = 12 // Max chars per KY command (safety limit; word-split keeps chunks small)
 
 	// Status byte flags (OR'd with 0xC0)
 	StatusXoff    byte = 0x01
@@ -47,10 +47,11 @@ type Winkeyer struct {
 	tuning   bool
 
 	// CW buffer and echo
-	buffer   []byte // chars waiting to be sent/echoed
+	buffer   []byte        // chars waiting to be sent/echoed
 	busy     bool
 	xoff     bool
-	echoDone chan struct{} // closed when echo goroutine exits
+	echoDone chan struct{} // closed when sendLoop goroutine exits
+	cancel   chan struct{} // close to signal sendLoop to stop
 
 	// Parser state
 	state     int
@@ -295,9 +296,12 @@ func (w *Winkeyer) execCommand() {
 		// Ignored
 
 	case 0x0A: // Clear buffer
+		wasBusy := w.busy
 		w.clearBuffer()
 		log.Printf("WK: clear buffer")
-		go w.cat.SendAbort()
+		if wasBusy {
+			w.cat.SendAbort()
+		}
 
 	case 0x0B: // Key immediate (tune)
 		if len(w.params) > 0 {
@@ -404,33 +408,53 @@ func (w *Winkeyer) bufferChar(ch byte) {
 
 	if !wasBusy {
 		w.sendStatusLocked()
-		// Start the echo/send goroutine
+		// Start the echo/send goroutine with its own done/cancel channels
 		w.echoDone = make(chan struct{})
-		go w.sendLoop()
+		w.cancel = make(chan struct{})
+		go w.sendLoop(w.echoDone, w.cancel)
 	}
 }
 
 // sendLoop drains the buffer, sends KY commands, and echoes characters.
-// Runs in its own goroutine.
-func (w *Winkeyer) sendLoop() {
+// Runs in its own goroutine. done is closed on exit; cancel is monitored for abort.
+func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
+	defer close(done)
+
+	// Brief coalescing delay — at 1200 baud bytes arrive every ~9ms,
+	// wait to accumulate a few chars before sending the first chunk.
+	select {
+	case <-time.After(20 * time.Millisecond):
+	case <-cancel:
+		return
+	}
+
 	for {
+		select {
+		case <-cancel:
+			return
+		default:
+		}
+
 		w.mu.Lock()
 		if len(w.buffer) == 0 || w.paused {
 			w.busy = false
 			w.xoff = false
 			w.sendStatusLocked()
-			done := w.echoDone
 			w.mu.Unlock()
-			if done != nil {
-				close(done)
-			}
 			return
 		}
 
-		// Take a chunk for KY command
+		// Take a chunk for KY command, splitting at word boundaries
+		// so any inter-chunk timing jitter falls on natural word spaces.
 		n := len(w.buffer)
 		if n > KYChunkSize {
 			n = KYChunkSize
+		}
+		for i := 0; i < n; i++ {
+			if w.buffer[i] == ' ' {
+				n = i + 1 // include the trailing space
+				break
+			}
 		}
 		chunk := make([]byte, n)
 		copy(chunk, w.buffer[:n])
@@ -440,13 +464,24 @@ func (w *Winkeyer) sendLoop() {
 		w.updateXoff()
 		w.mu.Unlock()
 
+		// Check cancel before sending — abort should prevent new KY
+		select {
+		case <-cancel:
+			return
+		default:
+		}
+
 		// Send KY command to K4
 		w.cat.SendKY(string(chunk))
 
 		// Echo characters back at WPM pace
 		for _, ch := range chunk {
 			dur := charDuration(ch, wpm)
-			time.Sleep(dur)
+			select {
+			case <-time.After(dur):
+			case <-cancel:
+				return
+			}
 			if echoEnabled {
 				w.writeByte(ch)
 			}
@@ -461,6 +496,11 @@ func (w *Winkeyer) clearBuffer() {
 	w.busy = false
 	w.xoff = false
 	w.paused = false
+	// Signal any running sendLoop to stop
+	if w.cancel != nil {
+		close(w.cancel)
+		w.cancel = nil
+	}
 	w.sendStatusLocked()
 }
 
@@ -595,8 +635,12 @@ func adminParamCount(subcode byte) int {
 		return 1
 	case 0x13: // FSK mode
 		return 2
+	case 0x15: // Load X2MODE (WK3)
+		return 1
 	case 0x18: // Get Paddle A2D extended
 		return 3
+	case 0x1C: // Set WK mode extended (WK3.1)
+		return 1
 	default:
 		return 0
 	}

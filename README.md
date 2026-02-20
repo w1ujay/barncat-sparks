@@ -15,19 +15,21 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ## Requirements
 
-- Go 1.21+ with CGO enabled (for MIDI support via go-rtmidi)
-- **Linux:** `libasound2-dev` (ALSA headers for MIDI)
+- Go 1.21+
 - A virtual serial port pair (for WinKeyer mode):
   - **Windows:** [com0com](https://com0com.sourceforge.net/)
   - **Linux:** `socat`
 - Network access to your K4 (direct TCP or via a CAT server like QK4 on port 9299)
+- **MIDI:** Windows only (uses `winmm.dll` directly — no CGO or external libraries needed)
 
 ## Building
 
 ```bash
-CGO_ENABLED=1 go build -o wk4 .                     # Linux
-CGO_ENABLED=1 GOOS=windows go build -o wk4.exe .    # Cross-compile for Windows
+go build -o wk4 .                          # Linux (WinKeyer only, MIDI stubs)
+GOOS=windows go build -o wk4.exe .         # Windows (WinKeyer + MIDI)
 ```
+
+No CGO required. The Windows build uses `winmm.dll` syscalls for MIDI, so cross-compilation works with just `GOOS=windows` — no mingw-w64 or C toolchain needed.
 
 ## Usage
 
@@ -81,13 +83,13 @@ This prints two `/dev/pts/N` paths. Point your logger at one, wk4 at the other.
 
 ## MIDI Controller Support
 
-wk4 can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via a JSON config file.
+wk4 can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via a JSON config file. MIDI support requires Windows (`winmm.dll`); on other platforms the MIDI flags are accepted but return a "not supported" message.
 
 ### Supported Actions
 
 | Action     | Description                          | MIDI Type        |
 |------------|--------------------------------------|------------------|
-| `vfo_tune` | Adjust VFO A frequency               | CC (relative)    |
+| `vfo_tune` | Adjust VFO A frequency               | CC (relative 2's complement) |
 | `volume`   | Set audio gain                        | CC (absolute)    |
 | `speed`    | Set CW keyer speed (WPM)             | CC (absolute)    |
 | `ptt`      | Push-to-talk (hold note = transmit)   | Note On/Off      |
@@ -125,6 +127,7 @@ Edit `midi-config.json` to map your controller's MIDI events to actions:
 - Serial: 1200 baud, 8N2 (8 data bits, no parity, 2 stop bits)
 - 64-byte CW character buffer with XON/XOFF flow control
 - Character echo timed to actual WPM using PARIS standard (1 dit = 1200/WPM ms)
+- CW text sent in word-sized chunks (split on spaces) for responsive abort — ESC stops after the current word
 - Supported CAT commands: `KY` (CW text), `KS` (speed), `TX`/`RX` (PTT), `FA`/`FB` (VFO frequency), `AG` (volume), `BU`/`BD` (band), `FT`/`SWT` (VFO select)
 
 ## License

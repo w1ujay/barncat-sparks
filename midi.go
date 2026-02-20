@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
-	"sync"
-
-	rtmidi "github.com/mattrtaylor/go-rtmidi"
+	"time"
 )
 
 // MIDIConfig holds the MIDI controller configuration.
@@ -71,154 +68,41 @@ func buildMappingIndex(cfg *MIDIConfig) map[midiKey]*MIDIMapping {
 	return idx
 }
 
-// MIDIDriver connects to a MIDI device and dispatches actions to the K4.
-type MIDIDriver struct {
-	mu     sync.Mutex
-	cat    *CATClient
-	config *MIDIConfig
-	index  map[midiKey]*MIDIMapping
-	midiIn rtmidi.MIDIIn
-	pttOn  bool
-	done   chan struct{}
-}
-
-// NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(cat *CATClient, config *MIDIConfig) *MIDIDriver {
-	return &MIDIDriver{
-		cat:    cat,
-		config: config,
-		index:  buildMappingIndex(config),
-		done:   make(chan struct{}),
-	}
-}
-
-// ListMIDIDevices prints available MIDI input devices to stdout.
-func ListMIDIDevices() error {
-	midiIn, err := rtmidi.NewMIDIInDefault()
-	if err != nil {
-		return fmt.Errorf("MIDI init: %w", err)
-	}
-	defer midiIn.Destroy()
-
-	count, err := midiIn.PortCount()
-	if err != nil {
-		return fmt.Errorf("MIDI port count: %w", err)
-	}
-	if count == 0 {
-		fmt.Println("No MIDI input devices found.")
-		return nil
-	}
-	fmt.Printf("MIDI input devices (%d):\n", count)
-	for i := 0; i < count; i++ {
-		name, err := midiIn.PortName(i)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("  %d: %s\n", i, name)
-	}
-	return nil
-}
-
-// Run opens the MIDI device and starts listening. Blocks until Close is called.
-func (d *MIDIDriver) Run() error {
-	midiIn, err := rtmidi.NewMIDIInDefault()
-	if err != nil {
-		return fmt.Errorf("MIDI init: %w", err)
-	}
-	d.midiIn = midiIn
-
-	count, err := midiIn.PortCount()
-	if err != nil {
-		return fmt.Errorf("MIDI port count: %w", err)
-	}
-
-	portIdx := -1
-	for i := 0; i < count; i++ {
-		name, err := midiIn.PortName(i)
-		if err != nil {
-			continue
-		}
-		if strings.Contains(strings.ToLower(name), strings.ToLower(d.config.Device)) {
-			portIdx = i
-			log.Printf("MIDI: matched device %q at port %d", name, i)
-			break
-		}
-	}
-	if portIdx < 0 {
-		return fmt.Errorf("MIDI device %q not found", d.config.Device)
-	}
-
-	if err := midiIn.SetCallback(d.handleMessage); err != nil {
-		return fmt.Errorf("MIDI set callback: %w", err)
-	}
-
-	midiIn.IgnoreTypes(true, true, true)
-
-	if err := midiIn.OpenPort(portIdx, "wk4"); err != nil {
-		return fmt.Errorf("MIDI open port: %w", err)
-	}
-
-	log.Printf("MIDI: listening on port %d", portIdx)
-	<-d.done
-	return nil
-}
-
-// Close shuts down the MIDI driver.
-func (d *MIDIDriver) Close() {
-	if d.midiIn != nil {
-		d.midiIn.Close()
-		d.midiIn.Destroy()
-	}
-	close(d.done)
-}
-
-// handleMessage is the rtmidi callback for incoming MIDI messages.
-func (d *MIDIDriver) handleMessage(midiIn rtmidi.MIDIIn, msg []byte, deltaTime float64) {
-	if len(msg) < 2 {
-		return
-	}
-	status := msg[0]
+// handleMIDIEvent processes a raw MIDI message from the platform driver.
+func (d *MIDIDriver) handleMIDIEvent(status, data1, data2 byte) {
 	msgType := status & 0xF0
 	channel := status & 0x0F
 
 	switch msgType {
 	case 0x90: // Note On
-		if len(msg) < 3 {
+		if data2 == 0 {
+			d.handleNoteOff(channel, data1)
 			return
 		}
-		number := msg[1]
-		velocity := msg[2]
-		if velocity == 0 {
-			d.handleNoteOff(channel, number)
-			return
-		}
-		key := midiKey{msgType: 0x90, channel: channel, number: number}
+		key := midiKey{msgType: 0x90, channel: channel, number: data1}
 		m, ok := d.index[key]
 		if !ok {
+			log.Printf("MIDI: unmapped note_on ch=%d note=%d vel=%d", channel, data1, data2)
 			return
 		}
-		log.Printf("MIDI: note_on ch=%d note=%d vel=%d -> %s", channel, number, velocity, m.Action)
-		d.dispatch(m, int(velocity))
+		log.Printf("MIDI: note_on ch=%d note=%d vel=%d -> %s", channel, data1, data2, m.Action)
+		d.dispatch(m, int(data2))
 
 	case 0x80: // Note Off
-		if len(msg) < 3 {
-			return
-		}
-		d.handleNoteOff(channel, msg[1])
+		d.handleNoteOff(channel, data1)
 
 	case 0xB0: // Control Change
-		if len(msg) < 3 {
-			return
-		}
-		number := msg[1]
-		value := msg[2]
-		key := midiKey{msgType: 0xB0, channel: channel, number: number}
+		key := midiKey{msgType: 0xB0, channel: channel, number: data1}
 		m, ok := d.index[key]
 		if !ok {
+			log.Printf("MIDI: unmapped cc ch=%d cc=%d val=%d", channel, data1, data2)
 			return
 		}
-		log.Printf("MIDI: cc ch=%d cc=%d val=%d -> %s", channel, number, value, m.Action)
-		d.dispatch(m, int(value))
+		log.Printf("MIDI: cc ch=%d cc=%d val=%d -> %s", channel, data1, data2, m.Action)
+		d.dispatch(m, int(data2))
+
+	default:
+		log.Printf("MIDI: unhandled msg=0x%02X ch=%d d1=%d d2=%d", msgType, channel, data1, data2)
 	}
 }
 
@@ -279,7 +163,7 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 				}
 			}
 		}
-		go d.tuneVFO(value, step)
+		d.tuneVFO(value, step)
 
 	default:
 		log.Printf("MIDI: unknown action %q", m.Action)
@@ -287,19 +171,44 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 }
 
 // tuneVFO adjusts VFO A frequency relative to current.
+// Uses 2's complement relative CC encoding: 1-63 = positive (CW), 65-127 = negative (CCW).
+// Caches frequency locally and throttles CAT commands to avoid flooding the radio.
+// Re-queries the radio if the cache is stale (>2s idle) so band changes and
+// external tuning are picked up automatically.
+// Must be called from the event loop goroutine (not concurrently).
 func (d *MIDIDriver) tuneVFO(value, step int) {
-	delta := (value - 64) * step
-	if delta == 0 {
+	// 2's complement relative encoding
+	var delta int
+	if value >= 1 && value <= 63 {
+		delta = value * step
+	} else if value >= 65 && value <= 127 {
+		delta = (value - 128) * step
+	} else {
+		return // 0 or 64 = no movement
+	}
+
+	now := time.Now()
+
+	// Re-query radio if cache is stale (frequency may have changed externally)
+	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 2*time.Second {
+		hz, err := d.cat.GetFreqA()
+		if err != nil {
+			log.Printf("MIDI: GetFreqA failed: %v", err)
+			return
+		}
+		d.vfoFreq = hz
+		d.vfoKnown = true
+	}
+
+	d.vfoFreq += delta
+	if d.vfoFreq < 0 {
+		d.vfoFreq = 0
+	}
+
+	// Throttle: max ~20 commands/sec to the radio
+	if now.Sub(d.lastTuneAt) < 50*time.Millisecond {
 		return
 	}
-	hz, err := d.cat.GetFreqA()
-	if err != nil {
-		log.Printf("MIDI: GetFreqA failed: %v", err)
-		return
-	}
-	hz += delta
-	if hz < 0 {
-		hz = 0
-	}
-	d.cat.SetFreqA(hz)
+	d.lastTuneAt = now
+	d.cat.SetFreqA(d.vfoFreq)
 }

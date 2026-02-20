@@ -101,10 +101,10 @@ func (c *CATClient) SendKY(text string) error {
 	return c.send(cmd)
 }
 
-// SendAbort stops CW keying and clears the K4 buffer.
+// SendAbort stops CW keying by switching the K4 to receive.
 func (c *CATClient) SendAbort() error {
-	log.Printf("CAT: KY0; (abort)")
-	return c.send("KY0;")
+	log.Printf("CAT: RX; (abort)")
+	return c.send("RX;")
 }
 
 // SetSpeed sets the K4 keyer speed in WPM.

@@ -5,13 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Run
 
 ```bash
-CGO_ENABLED=1 go build -o wk4 .              # Linux (CGO required for MIDI)
-CGO_ENABLED=1 GOOS=windows go build -o wk4.exe .  # Cross-compile for Windows
-go test ./...                   # Run tests
-go vet ./...                    # Lint
+go build -o wk4 .                          # Linux (WinKeyer only, MIDI stubs)
+GOOS=windows go build -o wk4.exe .         # Windows (WinKeyer + MIDI)
+go test ./...                              # Run tests
+go vet ./...                               # Lint
 ```
 
-CGO is required because the MIDI driver uses go-rtmidi (wraps the RtMidi C library). On Linux, `libasound2-dev` must be installed for ALSA headers. There is no Makefile; use standard `go build` commands.
+No CGO required. MIDI uses Windows `winmm.dll` syscalls directly (build-tagged in `midi_windows.go`). On non-Windows platforms, MIDI functions compile as stubs. There is no Makefile; use standard `go build` commands.
 
 ## Architecture
 
@@ -21,22 +21,26 @@ wk4 is a **WinKeyer3 emulator and MIDI controller for the Elecraft K4** radio. I
 
 ```
 N1MM Logger ↔ virtual serial port ↔ Winkeyer (winkeyer.go) ↔ CATClient (catclient.go) ↔ K4 radio (TCP)
-MIDI controller (USB) ↔ MIDIDriver (midi.go) ─────────────↗
+MIDI controller (USB) ↔ MIDIDriver (midi_windows.go) ─────↗
 ```
 
 ### Key Components
 
-- **`winkeyer.go`** — Core protocol engine. Implements a byte-level state machine (`stIdle → stAdmin/stParam → stAdminParam`) that parses the WinKeyer binary protocol. Manages a 64-byte CW character buffer with XON/XOFF flow control. The `sendLoop` goroutine drains the buffer in chunks (max 24 chars), sends KY commands to the radio, and echoes characters back at the correct WPM timing.
+- **`winkeyer.go`** — Core protocol engine. Implements a byte-level state machine (`stIdle → stAdmin/stParam → stAdminParam`) that parses the WinKeyer binary protocol. Manages a 64-byte CW character buffer with XON/XOFF flow control. The `sendLoop` goroutine drains the buffer in word-sized chunks (split on spaces), sends KY commands to the radio, and echoes characters back at the correct WPM timing. Each `sendLoop` instance receives its own `done`/`cancel` channels for clean abort support.
 
 - **`catclient.go`** — TCP client that sends Elecraft CAT commands (`KY` for CW text, `KS` for speed, `TX`/`RX` for PTT, `FA`/`FB` for VFO frequency, `AG` for volume, `BU`/`BD` for band, `FT`/`SWT` for VFO select). Reads responses split on semicolons. Connection is persistent with a background `readLoop`.
 
-- **`midi.go`** — MIDI controller driver using go-rtmidi. Loads a JSON config file (`midi-config.json`) that maps MIDI events (CC, Note On/Off) to K4 actions (VFO tune, volume, speed, PTT, band up/down, VFO A/B/swap). Uses a callback-based event loop with O(1) mapping lookup.
+- **`midi.go`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Loads a JSON config file (`midi-config.json`) that maps MIDI events (CC, Note On/Off) to K4 actions (VFO tune, volume, speed, PTT, band up/down, VFO A/B/swap). O(1) mapping lookup via `midiKey`.
+
+- **`midi_windows.go`** — Windows MIDI driver using `winmm.dll` syscalls (`midiInOpen`, `midiInStart`, etc.). Callback sends raw MIDI events to a buffered channel; a goroutine dispatches them via `handleMIDIEvent`.
+
+- **`midi_other.go`** — Stub MIDI driver for non-Windows platforms. `ListMIDIDevices` prints "not supported", `Run()` returns an error.
 
 - **`morse.go`** — Lookup table mapping ASCII characters to their duration in dit units. Used by `charDuration()` to pace character echo timing based on WPM (PARIS standard: 1 dit = 1200/WPM ms).
 
 ### Concurrency Model
 
-The `Winkeyer` struct uses two mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes. The `MIDIDriver` uses `mu` to guard PTT toggle state. Both dispatch CAT commands via `go` to avoid blocking their respective read/callback loops. The `CATClient.send()` method is mutex-protected, allowing concurrent calls from both subsystems.
+The `Winkeyer` struct uses two mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. The `MIDIDriver` event loop processes MIDI events synchronously (one at a time); VFO tuning caches the frequency locally and throttles CAT sends to ~20/sec. The `CATClient.send()` method is mutex-protected, allowing concurrent calls from both subsystems. Lock order is always `Winkeyer.mu` → `CATClient.mu` to prevent deadlocks.
 
 ### Serial Port Configuration
 
