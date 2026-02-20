@@ -329,14 +329,80 @@ func (g *GUI) startLearn(row *MappingRow) {
 }
 
 // start connects all subsystems.
-// Placeholder — will be implemented in a later task.
 func (g *GUI) start() {
-	g.setStatus("Starting...")
+	g.readUIIntoConfig()
+
+	// Save config on start
+	if err := SaveAppConfig(g.configPath(), g.config); err != nil {
+		g.setStatus(fmt.Sprintf("Save failed: %v", err))
+	}
+
+	g.setStatus("Connecting to K4...")
+
+	// Connect CAT
+	g.cat = NewCATClient(g.config.CATAddress)
+	if err := g.cat.Connect(); err != nil {
+		g.setStatus(fmt.Sprintf("CAT error: %v", err))
+		return
+	}
+
+	// Start WinKeyer if serial port selected
+	if g.config.SerialPort != "" {
+		g.wk = NewWinkeyer(g.cat)
+		g.wk.wpm = g.config.KeyerSpeed
+		if err := g.wk.OpenSerial(g.config.SerialPort); err != nil {
+			g.setStatus(fmt.Sprintf("Serial error: %v", err))
+			g.cat.Close()
+			g.cat = nil
+			return
+		}
+		g.cat.SetSpeed(g.config.KeyerSpeed)
+		go g.wk.Run()
+	}
+
+	// Start MIDI if device selected
+	if g.config.MIDIDevice != "" {
+		midiCfg := g.config.ToMIDIConfig()
+		g.midi = NewMIDIDriver(g.cat, midiCfg)
+		go func() {
+			if err := g.midi.Run(); err != nil {
+				// Update status on UI thread
+				g.setStatus(fmt.Sprintf("MIDI: %v", err))
+			}
+		}()
+	}
+
+	g.running = true
+	g.startBtn.Disable()
+	g.stopBtn.Enable()
+
+	status := fmt.Sprintf("Running — CAT: %s", g.config.CATAddress)
+	if g.config.SerialPort != "" {
+		status += fmt.Sprintf(", Serial: %s", g.config.SerialPort)
+	}
+	if g.config.MIDIDevice != "" {
+		status += fmt.Sprintf(", MIDI: %s", g.config.MIDIDevice)
+	}
+	g.setStatus(status)
 }
 
 // stop disconnects all subsystems.
-// Placeholder — will be implemented in a later task.
 func (g *GUI) stop() {
+	if g.midi != nil {
+		g.midi.Close()
+		g.midi = nil
+	}
+	if g.wk != nil {
+		g.wk.Close()
+		g.wk = nil
+	}
+	if g.cat != nil {
+		g.cat.Close()
+		g.cat = nil
+	}
+	g.running = false
+	g.startBtn.Enable()
+	g.stopBtn.Disable()
 	g.setStatus("Stopped")
 }
 
