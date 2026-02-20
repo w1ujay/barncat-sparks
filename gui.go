@@ -348,9 +348,86 @@ func (g *GUI) stopAll() {
 }
 
 // saveConfig reads UI state back into the config and saves it.
-// Placeholder — will be implemented in a later task.
 func (g *GUI) saveConfig() {
+	g.readUIIntoConfig()
+	path := g.configPath()
+	if err := SaveAppConfig(path, g.config); err != nil {
+		g.setStatus(fmt.Sprintf("Save failed: %v", err))
+		return
+	}
 	g.setStatus("Settings saved")
+}
+
+// readUIIntoConfig reads all UI widget values into g.config.
+func (g *GUI) readUIIntoConfig() {
+	g.config.SerialPort = g.serialPortSelect.Selected
+	g.config.CATAddress = g.catAddrEntry.Text
+	if g.config.CATAddress == "" {
+		g.config.CATAddress = "localhost:9299"
+	}
+
+	speed := 25
+	fmt.Sscanf(g.speedEntry.Text, "%d", &speed)
+	if speed < 5 {
+		speed = 5
+	}
+	if speed > 99 {
+		speed = 99
+	}
+	g.config.KeyerSpeed = speed
+
+	g.config.MIDIDevice = g.midiDeviceSelect.Selected
+	g.config.MinimizeToTray = g.trayCheck.Checked
+
+	g.config.Mappings = nil
+	for _, row := range g.mappingRows {
+		entry := g.rowToMappingEntry(row)
+		if entry.Action != "" {
+			g.config.Mappings = append(g.config.Mappings, entry)
+		}
+	}
+}
+
+// rowToMappingEntry converts a GUI mapping row to a MappingEntry.
+func (g *GUI) rowToMappingEntry(row *MappingRow) MappingEntry {
+	entry := MappingEntry{}
+
+	// Find action name from label
+	for name, def := range ActionRegistry {
+		if def.Label == row.actionSelect.Selected {
+			entry.Action = name
+			break
+		}
+	}
+
+	switch row.typeSelect.Selected {
+	case "CC":
+		entry.Type = "cc"
+	case "Note On":
+		entry.Type = "note_on"
+	}
+
+	fmt.Sscanf(row.channelEntry.Text, "%d", &entry.Channel)
+	fmt.Sscanf(row.numberEntry.Text, "%d", &entry.Number)
+
+	if len(row.optsWidgets) > 0 {
+		entry.Opts = make(map[string]interface{})
+		for key, w := range row.optsWidgets {
+			var val float64
+			if _, err := fmt.Sscanf(w.Text, "%f", &val); err == nil {
+				entry.Opts[key] = val
+			} else {
+				entry.Opts[key] = w.Text
+			}
+		}
+	}
+
+	return entry
+}
+
+// configPath returns the config file path.
+func (g *GUI) configPath() string {
+	return g.cfgPath
 }
 
 func (g *GUI) setStatus(msg string) {
