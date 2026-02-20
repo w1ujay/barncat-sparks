@@ -10,12 +10,16 @@ import (
 
 // AppConfig holds all wk4 settings, serialized to wk4-config.json.
 type AppConfig struct {
-	SerialPort     string         `json:"serial_port"`
-	CATAddress     string         `json:"cat_address"`
-	KeyerSpeed     int            `json:"keyer_speed"`
-	MIDIDevice     string         `json:"midi_device"`
-	MinimizeToTray bool           `json:"minimize_to_tray"`
-	Mappings       []MappingEntry `json:"mappings"`
+	SerialPort    string         `json:"serial_port"`
+	CATAddress    string         `json:"cat_address"`
+	CATTransport  string         `json:"cat_transport"`
+	CATSerialPort string         `json:"cat_serial_port"`
+	CATSerialBaud int            `json:"cat_serial_baud"`
+	CATListen     string         `json:"cat_listen"`
+	KeyerSpeed    int            `json:"keyer_speed"`
+	MIDIDevice    string         `json:"midi_device"`
+	MinimizeToTray bool          `json:"minimize_to_tray"`
+	Mappings      []MappingEntry `json:"mappings"`
 }
 
 // MappingEntry defines a single MIDI-to-action mapping in the config file.
@@ -30,8 +34,10 @@ type MappingEntry struct {
 // DefaultAppConfig returns a config with sensible defaults.
 func DefaultAppConfig() *AppConfig {
 	return &AppConfig{
-		CATAddress: "localhost:9299",
-		KeyerSpeed: 25,
+		CATAddress:    "localhost:9299",
+		CATTransport:  "tcp",
+		CATSerialBaud: 38400,
+		KeyerSpeed:    25,
 	}
 }
 

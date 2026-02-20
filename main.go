@@ -34,6 +34,10 @@ func main() {
 	midiConfigPath := flag.String("midi-config", "", "Path to MIDI mapping config file")
 	midiList := flag.Bool("midi-list", false, "List available MIDI devices and exit")
 	configFile := flag.String("config", "", "Path to config file (default: wk4-config.json next to executable)")
+	catTransport := flag.String("cat-transport", "", "CAT transport: tcp or serial")
+	catSerialPort := flag.String("cat-serial", "", "Serial port for radio CAT (e.g., COM3)")
+	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
+	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
 	flag.Parse()
 
@@ -58,15 +62,17 @@ func main() {
 
 	// If CLI flags specify port or midi, run headless (backwards compatible)
 	if *portName != "" || *midiDevice != "" || *noGUI {
-		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath)
+		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
+			*catTransport, *catSerialPort, *catBaud, *catListen)
 		return
 	}
 
-	// Otherwise, launch GUI
-	RunGUI(cfgPath)
+	// Otherwise, launch web UI
+	RunWebUI(cfgPath)
 }
 
-func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath string) {
+func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
+	catTransport, catSerialPort string, catBaud int, catListen string) {
 	// Load config for defaults if CLI flags are sparse
 	cfg, _ := LoadAppConfig(cfgPath)
 	if cfg == nil {
@@ -76,6 +82,24 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	// CLI flags override config
 	if catAddr == "" {
 		catAddr = cfg.CATAddress
+	}
+	if catTransport == "" {
+		catTransport = cfg.CATTransport
+	}
+	if catTransport == "" {
+		catTransport = "tcp"
+	}
+	if catSerialPort == "" {
+		catSerialPort = cfg.CATSerialPort
+	}
+	if catBaud == 0 {
+		catBaud = cfg.CATSerialBaud
+	}
+	if catBaud == 0 {
+		catBaud = 38400
+	}
+	if catListen == "" {
+		catListen = cfg.CATListen
 	}
 	if speed == 0 {
 		speed = cfg.KeyerSpeed
@@ -87,36 +111,63 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if portName == "" && midiDevice == "" {
 		fmt.Fprintln(os.Stderr, "wk4 - WinKeyer emulator & MIDI controller for K4")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Usage: wk4                                        # Launch GUI")
+		fmt.Fprintln(os.Stderr, "Usage: wk4                                        # Launch web UI")
 		fmt.Fprintln(os.Stderr, "       wk4 [-port <serial-port>] [-midi <device>]  # Headless mode")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Options:")
-		fmt.Fprintln(os.Stderr, "  -port         Serial port for Winkeyer (e.g., COM5, /dev/pts/3)")
-		fmt.Fprintln(os.Stderr, "  -midi         MIDI device name or substring (e.g., DJ2GO2)")
-		fmt.Fprintln(os.Stderr, "  -midi-config  Path to MIDI mapping config (default: midi-config.json)")
-		fmt.Fprintln(os.Stderr, "  -midi-list    List available MIDI devices and exit")
-		fmt.Fprintln(os.Stderr, "  -cat          CAT server address (default: localhost:9299)")
-		fmt.Fprintln(os.Stderr, "  -speed        Initial keyer speed in WPM (default: 25)")
-		fmt.Fprintln(os.Stderr, "  -config       Path to config file")
-		fmt.Fprintln(os.Stderr, "  -nogui        Run in headless mode (no GUI)")
+		fmt.Fprintln(os.Stderr, "  -port           Serial port for Winkeyer (e.g., COM5, /dev/pts/3)")
+		fmt.Fprintln(os.Stderr, "  -midi           MIDI device name or substring (e.g., DJ2GO2)")
+		fmt.Fprintln(os.Stderr, "  -midi-config    Path to MIDI mapping config (default: midi-config.json)")
+		fmt.Fprintln(os.Stderr, "  -midi-list      List available MIDI devices and exit")
+		fmt.Fprintln(os.Stderr, "  -cat            CAT server address (default: localhost:9299)")
+		fmt.Fprintln(os.Stderr, "  -cat-transport  CAT transport: tcp or serial (default: tcp)")
+		fmt.Fprintln(os.Stderr, "  -cat-serial     Serial port for radio CAT (e.g., COM3)")
+		fmt.Fprintln(os.Stderr, "  -cat-baud       Baud rate for serial CAT (default: 38400)")
+		fmt.Fprintln(os.Stderr, "  -cat-listen     TCP listen address for CAT server (e.g., :9300)")
+		fmt.Fprintln(os.Stderr, "  -speed          Initial keyer speed in WPM (default: 25)")
+		fmt.Fprintln(os.Stderr, "  -config         Path to config file")
+		fmt.Fprintln(os.Stderr, "  -nogui          Run in headless mode (no web UI)")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Examples:")
-		fmt.Fprintln(os.Stderr, "  wk4                                             # GUI mode")
+		fmt.Fprintln(os.Stderr, "  wk4                                             # Web UI mode")
 		fmt.Fprintln(os.Stderr, "  wk4 -port COM5                                  # WinKeyer only")
 		fmt.Fprintln(os.Stderr, "  wk4 -midi DJ2GO2                                # MIDI only")
 		fmt.Fprintln(os.Stderr, "  wk4 -port COM5 -midi DJ2GO2 -cat k4:9299        # Both")
+		fmt.Fprintln(os.Stderr, "  wk4 -cat-transport serial -cat-serial COM3 -cat-listen :9300  # Bridge")
 		os.Exit(1)
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("wk4: WinKeyer emulator & MIDI controller for K4 (headless)")
-	log.Printf("  CAT: %s", catAddr)
 
-	cat := NewCATClient(catAddr)
-	if err := cat.Connect(); err != nil {
-		log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+	cat := NewCATClient()
+	switch catTransport {
+	case "serial":
+		if catSerialPort == "" {
+			log.Fatal("serial transport requires -cat-serial")
+		}
+		log.Printf("  CAT: %s (serial, %d baud)", catSerialPort, catBaud)
+		if err := cat.ConnectSerial(catSerialPort, catBaud); err != nil {
+			log.Fatalf("Failed to connect to radio: %v", err)
+		}
+	default:
+		log.Printf("  CAT: %s (TCP)", catAddr)
+		if err := cat.ConnectTCP(catAddr); err != nil {
+			log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+		}
 	}
 	defer cat.Close()
+
+	// Start CATServer if listen address configured
+	if catListen != "" {
+		srv, err := NewCATServer(cat, catListen)
+		if err != nil {
+			log.Fatalf("CATServer: %v", err)
+		}
+		go srv.Run()
+		defer srv.Close()
+		log.Printf("  CATServer: %s", catListen)
+	}
 
 	if portName != "" {
 		log.Printf("  serial: %s", portName)

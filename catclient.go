@@ -3,59 +3,121 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"go.bug.st/serial"
 )
 
-// CATClient manages a TCP connection to a CAT server (QK4 or K4 direct).
-// It translates Winkeyer actions into K4 CAT commands.
+// CATClient manages a connection to a radio via Elecraft CAT protocol.
+// The transport can be TCP (K4, remote bridge) or serial (K3, etc).
 type CATClient struct {
-	addr string
-	conn net.Conn
-	mu   sync.Mutex
+	mu        sync.Mutex
+	transport io.ReadWriteCloser
+	respCh    chan string
 
-	// Response channel for synchronous queries
-	respCh chan string
+	// Response relays — all responses are broadcast to every writer in this list
+	// (used by CATServer to forward responses to multiple TCP clients).
+	relayMu sync.Mutex
+	relays  []io.Writer
 }
 
-func NewCATClient(addr string) *CATClient {
+// NewCATClient creates a new CATClient. Call ConnectTCP or ConnectSerial to connect.
+func NewCATClient() *CATClient {
 	return &CATClient{
-		addr:   addr,
 		respCh: make(chan string, 8),
 	}
 }
 
-func (c *CATClient) Connect() error {
-	conn, err := net.DialTimeout("tcp", c.addr, 5*time.Second)
+// ConnectTCP connects to a CAT server over TCP (e.g., K4 or remote bridge).
+func (c *CATClient) ConnectTCP(addr string) error {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("CAT connect: %w", err)
 	}
-	c.conn = conn
+	c.mu.Lock()
+	c.transport = conn
+	c.mu.Unlock()
 	go c.readLoop()
-	log.Printf("CAT: connected to %s", c.addr)
+	log.Printf("CAT: connected to %s (TCP)", addr)
 	return nil
+}
+
+// ConnectSerial connects to a radio over a serial port (e.g., K3).
+func (c *CATClient) ConnectSerial(portName string, baud int) error {
+	mode := &serial.Mode{
+		BaudRate: baud,
+		DataBits: 8,
+		StopBits: serial.OneStopBit,
+		Parity:   serial.NoParity,
+	}
+	port, err := serial.Open(portName, mode)
+	if err != nil {
+		return fmt.Errorf("CAT serial: %w", err)
+	}
+	c.mu.Lock()
+	c.transport = port
+	c.mu.Unlock()
+	go c.readLoop()
+	log.Printf("CAT: connected to %s (serial, %d baud)", portName, baud)
+	return nil
+}
+
+// AddRelay adds an io.Writer that receives copies of all radio responses.
+// Used by CATServer to broadcast to multiple TCP clients.
+func (c *CATClient) AddRelay(w io.Writer) {
+	c.relayMu.Lock()
+	c.relays = append(c.relays, w)
+	c.relayMu.Unlock()
+}
+
+// RemoveRelay removes an io.Writer from the relay list.
+func (c *CATClient) RemoveRelay(w io.Writer) {
+	c.relayMu.Lock()
+	for i, r := range c.relays {
+		if r == w {
+			c.relays = append(c.relays[:i], c.relays[i+1:]...)
+			break
+		}
+	}
+	c.relayMu.Unlock()
 }
 
 func (c *CATClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
+	if c.transport != nil {
+		c.transport.Close()
+		c.transport = nil
 	}
 }
 
 func (c *CATClient) readLoop() {
-	scanner := bufio.NewScanner(c.conn)
+	c.mu.Lock()
+	t := c.transport
+	c.mu.Unlock()
+	if t == nil {
+		return
+	}
+
+	scanner := bufio.NewScanner(t)
 	scanner.Split(splitSemicolon)
 	for scanner.Scan() {
 		resp := scanner.Text()
 		if resp == "" {
 			continue
 		}
+		// Broadcast to all CATServer TCP clients
+		c.relayMu.Lock()
+		for _, w := range c.relays {
+			fmt.Fprintf(w, "%s;", resp)
+		}
+		c.relayMu.Unlock()
+
 		select {
 		case c.respCh <- resp:
 		default:
@@ -80,10 +142,10 @@ func splitSemicolon(data []byte, atEOF bool) (advance int, token []byte, err err
 func (c *CATClient) send(cmd string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn == nil {
+	if c.transport == nil {
 		return fmt.Errorf("CAT: not connected")
 	}
-	_, err := fmt.Fprint(c.conn, cmd)
+	_, err := fmt.Fprint(c.transport, cmd)
 	if err != nil {
 		log.Printf("CAT send error: %v", err)
 	}

@@ -75,6 +75,48 @@ func TestLoadAppConfigDefaults(t *testing.T) {
 	if cfg.KeyerSpeed != 25 {
 		t.Errorf("default KeyerSpeed = %d, want 25", cfg.KeyerSpeed)
 	}
+	if cfg.CATTransport != "tcp" {
+		t.Errorf("default CATTransport = %q, want tcp", cfg.CATTransport)
+	}
+	if cfg.CATSerialBaud != 38400 {
+		t.Errorf("default CATSerialBaud = %d, want 38400", cfg.CATSerialBaud)
+	}
+}
+
+func TestAppConfigBridgeFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wk4-config.json")
+
+	cfg := &AppConfig{
+		CATAddress:    "localhost:9299",
+		CATTransport:  "serial",
+		CATSerialPort: "COM3",
+		CATSerialBaud: 38400,
+		CATListen:     ":9300",
+		KeyerSpeed:    25,
+	}
+
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatalf("SaveAppConfig: %v", err)
+	}
+
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+
+	if loaded.CATTransport != "serial" {
+		t.Errorf("CATTransport = %q, want serial", loaded.CATTransport)
+	}
+	if loaded.CATSerialPort != "COM3" {
+		t.Errorf("CATSerialPort = %q, want COM3", loaded.CATSerialPort)
+	}
+	if loaded.CATSerialBaud != 38400 {
+		t.Errorf("CATSerialBaud = %d, want 38400", loaded.CATSerialBaud)
+	}
+	if loaded.CATListen != ":9300" {
+		t.Errorf("CATListen = %q, want :9300", loaded.CATListen)
+	}
 }
 
 func TestAppConfigToMIDIConfig(t *testing.T) {

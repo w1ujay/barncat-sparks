@@ -5,22 +5,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Run
 
 ```bash
-# Linux (requires gcc for Fyne/CGO)
-CGO_ENABLED=1 go build -o wk4 .
+# Build (no CGO required)
+go build -o wk4 .
 
-# Windows (requires MinGW-w64 in PATH for Fyne/CGO)
-CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows go build -o wk4.exe .
+# Cross-compile for Windows
+GOOS=windows go build -o wk4.exe .
 
-# Tests (unchanged)
+# Tests
 go test ./...                              # Run tests
 go vet ./...                               # Lint
 ```
 
-**CGO is required** since the Fyne GUI toolkit depends on C libraries. A C compiler (gcc on Linux, MinGW-w64 on Windows cross-compile) must be available. MIDI uses Windows `winmm.dll` syscalls directly (build-tagged in `midi_windows.go`). On non-Windows platforms, MIDI functions compile as stubs. There is no Makefile; use standard `go build` commands.
+**No CGO required.** The GUI is a web UI served by Go's `net/http` (embedded HTML via `go:embed`). MIDI uses Windows `winmm.dll` syscalls directly (build-tagged in `midi_windows.go`). On non-Windows platforms, MIDI functions compile as stubs. There is no Makefile; use standard `go build` commands.
 
 ### Running Modes
 
-- **GUI (default):** `./wk4` — launches a Fyne window for configuring serial port, CAT address, MIDI device, and mappings. Settings are saved to `wk4-config.json`.
+- **Web UI (default):** `./wk4` — starts an HTTP server on localhost and opens the browser. Configure serial port, CAT address, MIDI device, and mappings. Settings saved to `wk4-config.json`.
 - **Headless (CLI):** `./wk4 -port COM5 -midi DJ2GO2` — backwards-compatible CLI mode, activated when `-port`, `-midi`, or `-nogui` flags are present.
 
 ## Architecture
@@ -30,31 +30,37 @@ wk4 is a **WinKeyer3 emulator and MIDI controller for the Elecraft K4** radio. I
 ### Data Flow
 
 ```
-N1MM Logger ↔ virtual serial port ↔ Winkeyer (winkeyer.go) ↔ CATClient (catclient.go) ↔ K4 radio (TCP)
+N1MM Logger ↔ virtual serial port ↔ Winkeyer (winkeyer.go) ↔ CATClient (catclient.go) ↔ K4 radio (TCP or serial)
 MIDI controller (USB) ↔ MIDIDriver (midi_windows.go) ─────↗
+Browser ↔ WebUI (webui.go, webui.html) ─── config/control ──↗
+N1MM Logger ↔ TCP ↔ CATServer (catserver.go) ──→ CATClient ──→ serial ──→ K3/K4 radio
 ```
 
 ### Key Components
 
-- **`main.go`** — Entry point. Routes between GUI mode (default, no CLI flags) and headless mode (when `-port`, `-midi`, or `-nogui` flags are present). Backwards compatible with the original CLI interface.
+- **`main.go`** — Entry point. Routes between web UI mode (default, no CLI flags) and headless mode (when `-port`, `-midi`, or `-nogui` flags are present). Backwards compatible with the original CLI interface.
 
-- **`gui.go`** — Fyne-based GUI application. Dark-themed window with Connection (serial port, CAT address, keyer speed), MIDI (device, mapping table with Learn button), and Options (minimize-to-tray) sections. Start/Stop buttons connect and disconnect all subsystems. System tray support for background operation.
+- **`webui.go`** — HTTP server and REST API. Serves the embedded `webui.html` on localhost, handles config load/save, start/stop of all subsystems, serial port and MIDI device enumeration. Auto-opens browser on startup.
 
-- **`config.go`** — `AppConfig` struct that holds all wk4 settings (serial port, CAT address, keyer speed, MIDI device, mappings, tray option). Serializes to/from `wk4-config.json`. Includes `ToMIDIConfig()` to convert to the existing `MIDIConfig` format, and `listSerialPorts()` for serial port enumeration.
+- **`webui.html`** — Single-page web UI embedded via `go:embed`. Dark-themed HTML with inline CSS and JS. Connection (serial port, CAT address, keyer speed), MIDI (device, mapping table), Options, Start/Stop, and status bar sections. Communicates with the Go backend via JSON REST API.
 
-- **`actions.go`** — Action registry (`ActionRegistry`) mapping action names to human-readable labels and configurable options. Used by the GUI to populate dropdowns and option fields. `ActionNames()` returns sorted names for UI display.
+- **`config.go`** — `AppConfig` struct that holds all wk4 settings (serial port, CAT address/transport/serial/baud/listen, keyer speed, MIDI device, mappings). Serializes to/from `wk4-config.json`. Includes `ToMIDIConfig()` to convert to the existing `MIDIConfig` format, and `listSerialPorts()` for serial port enumeration.
+
+- **`actions.go`** — Action registry (`ActionRegistry`) mapping action names to human-readable labels and configurable options. Used by the web UI to populate dropdowns and option fields. `ActionNames()` returns sorted names for UI display.
 
 - **`winkeyer.go`** — Core protocol engine. Implements a byte-level state machine (`stIdle → stAdmin/stParam → stAdminParam`) that parses the WinKeyer binary protocol. Manages a 64-byte CW character buffer with XON/XOFF flow control. The `sendLoop` goroutine drains the buffer in word-sized chunks (split on spaces), sends KY commands to the radio, and echoes characters back at the correct WPM timing. Each `sendLoop` instance receives its own `done`/`cancel` channels for clean abort support.
 
-- **`catclient.go`** — TCP client that sends Elecraft CAT commands (`KY` for CW text, `KS` for speed, `TX`/`RX` for PTT, `FA`/`FB` for VFO frequency, `AG` for volume, `BU`/`BD` for band, `FT`/`SWT` for VFO select). Reads responses split on semicolons. Connection is persistent with a background `readLoop`.
+- **`catclient.go`** — Transport-agnostic CAT client. Connects to radios via TCP (`ConnectTCP`) or serial (`ConnectSerial`, using `io.ReadWriteCloser`). Sends Elecraft CAT commands (`KY` for CW text, `KS` for speed, `TX`/`RX` for PTT, `FA`/`FB` for VFO frequency, `AG` for volume, `BU`/`BD` for band, `FT`/`SWT` for VFO select). Reads responses split on semicolons. Supports response relay (`AddRelay`/`RemoveRelay`) for CATServer to broadcast to multiple TCP clients.
+
+- **`catserver.go`** — TCP relay server. Accepts multiple TCP clients and relays CAT commands to/from the CATClient's transport (serial or TCP). Enables N1MM or a remote wk4 instance to connect to a serial radio over the network. Responses are broadcast to all connected clients.
 
 - **`midi.go`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Loads a JSON config file (`midi-config.json`) that maps MIDI events (CC, Note On/Off) to K4 actions (VFO tune, volume, speed, PTT, band up/down, VFO A/B/swap). O(1) mapping lookup via `midiKey`.
 
 - **`midi_windows.go`** — Windows MIDI driver using `winmm.dll` syscalls (`midiInOpen`, `midiInStart`, etc.). Callback sends raw MIDI events to a buffered channel; a goroutine dispatches them via `handleMIDIEvent`.
 
-- **`midi_other.go`** — Stub MIDI driver for non-Windows platforms. `ListMIDIDevices` prints "not supported", `Run()` returns an error. Includes cross-platform `midiEvent` type and `mimData` constant for GUI compile compatibility.
+- **`midi_other.go`** — Stub MIDI driver for non-Windows platforms. `ListMIDIDevices` prints "not supported", `Run()` returns an error. Includes cross-platform `midiEvent` type and `mimData` constant for compile compatibility.
 
-- **`gui_midi.go`** / **`gui_midi_windows.go`** / **`gui_midi_other.go`** — Platform-specific MIDI device enumeration for the GUI dropdown. Windows uses `winmm.dll` to list devices; non-Windows returns an empty list.
+- **`midi_list_windows.go`** / **`midi_list_other.go`** — Platform-specific MIDI device enumeration. Windows uses `winmm.dll` to list devices; non-Windows returns an empty list.
 
 - **`morse.go`** — Lookup table mapping ASCII characters to their duration in dit units. Used by `charDuration()` to pace character echo timing based on WPM (PARIS standard: 1 dit = 1200/WPM ms).
 

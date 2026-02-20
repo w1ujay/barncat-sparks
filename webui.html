@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wk4 — WinKeyer &amp; MIDI Controller</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:#1e1e1e;color:#d4d4d4;line-height:1.5;padding:20px;max-width:720px;margin:0 auto}
+h1{font-size:1.3em;margin-bottom:16px;color:#e0e0e0}
+h2{font-size:1.05em;color:#569cd6;margin:18px 0 10px;border-bottom:1px solid #333;padding-bottom:4px}
+label{display:block;font-size:0.85em;color:#9cdcfe;margin-bottom:2px}
+input,select{background:#2d2d2d;color:#d4d4d4;border:1px solid #444;border-radius:3px;
+  padding:5px 8px;font-size:0.9em;width:100%}
+input:focus,select:focus{outline:none;border-color:#569cd6}
+select{cursor:pointer}
+button{background:#0e639c;color:#fff;border:none;border-radius:3px;padding:6px 16px;
+  font-size:0.9em;cursor:pointer}
+button:hover{background:#1177bb}
+button:disabled{background:#3a3a3a;color:#666;cursor:default}
+button.danger{background:#a1260d}
+button.danger:hover{background:#c4391a}
+button.secondary{background:#333;color:#ccc}
+button.secondary:hover{background:#444}
+.form-row{display:grid;grid-template-columns:140px 1fr;align-items:center;gap:6px;margin-bottom:8px}
+.form-row label{margin-bottom:0}
+.btn-bar{display:flex;gap:8px;margin-top:14px}
+.btn-bar .spacer{flex:1}
+.status-bar{margin-top:14px;padding:8px 12px;background:#252526;border:1px solid #333;
+  border-radius:3px;font-size:0.85em;color:#ccc}
+.status-bar.running{border-color:#4ec9b0;color:#4ec9b0}
+table.mappings{width:100%;border-collapse:collapse;margin:8px 0;font-size:0.85em}
+table.mappings th{text-align:left;padding:4px 6px;color:#9cdcfe;border-bottom:1px solid #444;font-weight:600}
+table.mappings td{padding:4px 6px;vertical-align:middle}
+table.mappings input,table.mappings select{font-size:0.85em;padding:3px 5px}
+table.mappings .col-action{width:28%}
+table.mappings .col-type{width:14%}
+table.mappings .col-ch{width:10%}
+table.mappings .col-num{width:10%}
+table.mappings .col-opts{width:30%}
+table.mappings .col-rm{width:8%;text-align:center}
+.opts-field{display:inline-flex;align-items:center;gap:4px}
+.opts-field label{display:inline;font-size:0.8em;white-space:nowrap}
+.opts-field input{width:70px}
+.no-mappings{color:#666;font-style:italic;padding:8px 0}
+.mapping-btns{display:flex;gap:6px;margin-top:4px}
+.radio-group{display:flex;gap:12px}
+.radio-group label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:0.9em}
+.radio-group input[type="radio"]{width:auto;margin:0}
+</style>
+</head>
+<body>
+
+<h1>wk4 — WinKeyer &amp; MIDI Controller</h1>
+
+<h2>Connection</h2>
+<div class="form-row">
+  <label>Radio Connection</label>
+  <div class="radio-group">
+    <label><input type="radio" name="catTransport" value="tcp" checked onchange="onTransportChange()"> TCP</label>
+    <label><input type="radio" name="catTransport" value="serial" onchange="onTransportChange()"> Serial</label>
+  </div>
+</div>
+<div class="form-row" id="catAddrRow">
+  <label for="catAddr">K4 Address</label>
+  <input id="catAddr" type="text" placeholder="localhost:9299">
+</div>
+<div class="form-row" id="catSerialRow" style="display:none">
+  <label for="catSerialPort">CAT Serial Port</label>
+  <select id="catSerialPort"><option value="">(none)</option></select>
+</div>
+<div class="form-row" id="catBaudRow" style="display:none">
+  <label for="catBaud">Baud Rate</label>
+  <select id="catBaud">
+    <option value="4800">4800</option>
+    <option value="9600">9600</option>
+    <option value="19200">19200</option>
+    <option value="38400" selected>38400</option>
+    <option value="57600">57600</option>
+    <option value="115200">115200</option>
+  </select>
+</div>
+<div class="form-row">
+  <label for="catListen">TCP Server (listen)</label>
+  <input id="catListen" type="text" placeholder="(disabled)">
+</div>
+<div class="form-row">
+  <label for="serialPort">WinKeyer Port</label>
+  <select id="serialPort"><option value="">(none)</option></select>
+</div>
+<div class="form-row">
+  <label for="keyerSpeed">Keyer Speed (WPM)</label>
+  <input id="keyerSpeed" type="number" min="5" max="99" placeholder="25">
+</div>
+
+<h2>MIDI</h2>
+<div class="form-row">
+  <label for="midiDevice">Device</label>
+  <select id="midiDevice"><option value="">(no MIDI devices)</option></select>
+</div>
+<label>Mappings</label>
+<div id="mappingsContainer"></div>
+<div class="mapping-btns">
+  <button class="secondary" onclick="addMapping()">+ Add</button>
+  <button class="secondary" onclick="removeLastMapping()">- Remove</button>
+</div>
+
+<h2>Options</h2>
+<div>
+  <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
+</div>
+
+<div class="btn-bar">
+  <button id="startBtn" onclick="doStart()">Start</button>
+  <button id="stopBtn" onclick="doStop()" disabled>Stop</button>
+  <div class="spacer"></div>
+  <button onclick="doSave()">Save Settings</button>
+</div>
+
+<div class="status-bar" id="statusBar">Status: Stopped</div>
+
+<script>
+let actions = [];
+let mappings = [];
+let statusPoll = null;
+
+async function init() {
+  const [actResp, cfgResp, portsResp, midiResp, statusResp] = await Promise.all([
+    fetch('/api/actions'),
+    fetch('/api/config'),
+    fetch('/api/serial-ports'),
+    fetch('/api/midi-devices'),
+    fetch('/api/status')
+  ]);
+  actions = await actResp.json();
+  const cfg = await cfgResp.json();
+  const ports = await portsResp.json();
+  const devices = await midiResp.json();
+  const status = await statusResp.json();
+
+  populateSelect('serialPort', ports, cfg.serial_port, '(none)');
+  populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
+  populateSelect('midiDevice', devices, cfg.midi_device, '(no MIDI devices)');
+  document.getElementById('catAddr').value = cfg.cat_address || '';
+  document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
+  document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
+  document.getElementById('catListen').value = cfg.cat_listen || '';
+
+  // Set transport radio
+  const transport = cfg.cat_transport || 'tcp';
+  document.querySelector('input[name="catTransport"][value="'+transport+'"]').checked = true;
+  onTransportChange();
+
+  // Set baud rate
+  if (cfg.cat_serial_baud) {
+    document.getElementById('catBaud').value = String(cfg.cat_serial_baud);
+  }
+
+  mappings = cfg.mappings || [];
+  renderMappings();
+  applyStatus(status);
+}
+
+function populateSelect(id, items, selected, placeholder) {
+  const sel = document.getElementById(id);
+  sel.innerHTML = '<option value="">' + placeholder + '</option>';
+  for (const item of items) {
+    const opt = document.createElement('option');
+    opt.value = item;
+    opt.textContent = item;
+    if (item === selected) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function renderMappings() {
+  const container = document.getElementById('mappingsContainer');
+  if (mappings.length === 0) {
+    container.innerHTML = '<div class="no-mappings">(no mappings — click "+ Add" to create one)</div>';
+    return;
+  }
+  let html = '<table class="mappings"><thead><tr>' +
+    '<th class="col-action">Action</th>' +
+    '<th class="col-type">Type</th>' +
+    '<th class="col-ch">Ch</th>' +
+    '<th class="col-num">Number</th>' +
+    '<th class="col-opts">Options</th>' +
+    '<th class="col-rm"></th>' +
+    '</tr></thead><tbody>';
+  for (let i = 0; i < mappings.length; i++) {
+    const m = mappings[i];
+    html += '<tr>' +
+      '<td>' + actionSelect(i, m.action) + '</td>' +
+      '<td>' + typeSelect(i, m.type) + '</td>' +
+      '<td><input type="number" min="0" max="15" value="' + (m.channel||0) +
+        '" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></td>' +
+      '<td><input type="number" min="0" max="127" value="' + (m.number||0) +
+        '" onchange="mappings['+i+'].number=parseInt(this.value)||0"></td>' +
+      '<td>' + optsFields(i, m.action, m.opts) + '</td>' +
+      '<td><button class="danger" onclick="removeMapping('+i+')" title="Remove">&times;</button></td>' +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function actionSelect(idx, selected) {
+  let html = '<select onchange="onActionChange('+idx+',this.value)">';
+  html += '<option value="">—</option>';
+  for (const a of actions) {
+    const sel = a.name === selected ? ' selected' : '';
+    html += '<option value="'+a.name+'"'+sel+'>'+a.label+'</option>';
+  }
+  html += '</select>';
+  return html;
+}
+
+function typeSelect(idx, selected) {
+  const types = [['cc','CC'],['note_on','Note On']];
+  let html = '<select onchange="mappings['+idx+'].type=this.value">';
+  for (const [val,label] of types) {
+    const sel = val === selected ? ' selected' : '';
+    html += '<option value="'+val+'"'+sel+'>'+label+'</option>';
+  }
+  html += '</select>';
+  return html;
+}
+
+function optsFields(idx, actionName, opts) {
+  const act = actions.find(a => a.name === actionName);
+  if (!act || !act.options || act.options.length === 0) return '';
+  let html = '';
+  for (const o of act.options) {
+    const val = (opts && opts[o.key] !== undefined) ? opts[o.key] : o.default;
+    html += '<span class="opts-field"><label>'+o.label+':</label>' +
+      '<input type="text" value="'+val+'" onchange="setOpt('+idx+',\''+o.key+'\',this.value)"></span>';
+  }
+  return html;
+}
+
+function setOpt(idx, key, value) {
+  if (!mappings[idx].opts) mappings[idx].opts = {};
+  const num = parseFloat(value);
+  mappings[idx].opts[key] = isNaN(num) ? value : num;
+}
+
+function onActionChange(idx, actionName) {
+  mappings[idx].action = actionName;
+  mappings[idx].opts = {};
+  // Populate defaults
+  const act = actions.find(a => a.name === actionName);
+  if (act && act.options) {
+    for (const o of act.options) {
+      const num = parseFloat(o.default);
+      mappings[idx].opts[o.key] = isNaN(num) ? o.default : num;
+    }
+  }
+  renderMappings();
+}
+
+function addMapping(entry) {
+  mappings.push(entry || {action:'', type:'cc', channel:0, number:0, opts:{}});
+  renderMappings();
+}
+
+function removeMapping(idx) {
+  mappings.splice(idx, 1);
+  renderMappings();
+}
+
+function removeLastMapping() {
+  if (mappings.length > 0) {
+    mappings.pop();
+    renderMappings();
+  }
+}
+
+function onTransportChange() {
+  const transport = document.querySelector('input[name="catTransport"]:checked').value;
+  document.getElementById('catAddrRow').style.display = transport === 'tcp' ? '' : 'none';
+  document.getElementById('catSerialRow').style.display = transport === 'serial' ? '' : 'none';
+  document.getElementById('catBaudRow').style.display = transport === 'serial' ? '' : 'none';
+}
+
+function gatherConfig() {
+  const transport = document.querySelector('input[name="catTransport"]:checked').value;
+  return {
+    serial_port: document.getElementById('serialPort').value,
+    cat_address: document.getElementById('catAddr').value || 'localhost:9299',
+    cat_transport: transport,
+    cat_serial_port: document.getElementById('catSerialPort').value,
+    cat_serial_baud: parseInt(document.getElementById('catBaud').value) || 38400,
+    cat_listen: document.getElementById('catListen').value,
+    keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
+    midi_device: document.getElementById('midiDevice').value,
+    minimize_to_tray: document.getElementById('minimizeToTray').checked,
+    mappings: mappings.map(m => ({
+      action: m.action,
+      type: m.type || 'cc',
+      channel: m.channel || 0,
+      number: m.number || 0,
+      opts: (m.opts && Object.keys(m.opts).length > 0) ? m.opts : undefined
+    }))
+  };
+}
+
+async function doSave() {
+  const cfg = gatherConfig();
+  const resp = await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(cfg)
+  });
+  if (resp.ok) {
+    setStatus(false, 'Settings saved');
+  } else {
+    const text = await resp.text();
+    setStatus(false, 'Save failed: ' + text);
+  }
+}
+
+async function doStart() {
+  // Save config into server state first
+  const cfg = gatherConfig();
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(cfg)
+  });
+
+  const resp = await fetch('/api/start', {method: 'POST'});
+  const status = await resp.json();
+  applyStatus(status);
+}
+
+async function doStop() {
+  const resp = await fetch('/api/stop', {method: 'POST'});
+  const status = await resp.json();
+  applyStatus(status);
+}
+
+function applyStatus(s) {
+  setStatus(s.running, s.message);
+  document.getElementById('startBtn').disabled = s.running;
+  document.getElementById('stopBtn').disabled = !s.running;
+
+  if (s.running && !statusPoll) {
+    statusPoll = setInterval(pollStatus, 2000);
+  } else if (!s.running && statusPoll) {
+    clearInterval(statusPoll);
+    statusPoll = null;
+  }
+}
+
+async function pollStatus() {
+  try {
+    const resp = await fetch('/api/status');
+    const s = await resp.json();
+    applyStatus(s);
+  } catch(e) { /* server may be gone */ }
+}
+
+function setStatus(running, msg) {
+  const bar = document.getElementById('statusBar');
+  bar.textContent = 'Status: ' + msg;
+  bar.className = 'status-bar' + (running ? ' running' : '');
+}
+
+init();
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"testing"
@@ -71,8 +72,8 @@ func mockCATResponder(t *testing.T, handler func(cmd string, conn net.Conn)) (ne
 // delay so the readLoop goroutine can exit before conn is nilled.
 func connectClient(t *testing.T, ln net.Listener) *CATClient {
 	t.Helper()
-	c := NewCATClient(ln.Addr().String())
-	if err := c.Connect(); err != nil {
+	c := NewCATClient()
+	if err := c.ConnectTCP(ln.Addr().String()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -169,4 +170,41 @@ func TestSwapVFO(t *testing.T) {
 	c := connectClient(t, ln)
 	c.SwapVFO()
 	expectCmd(t, cmds, "SWT11")
+}
+
+func TestRelay(t *testing.T) {
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		if cmd == "FA" {
+			fmt.Fprint(conn, "FA00014053284;")
+		}
+	})
+	c := connectClient(t, ln)
+
+	// Set up two relay buffers (simulating two TCP clients)
+	var buf1, buf2 bytes.Buffer
+	c.AddRelay(&buf1)
+	c.AddRelay(&buf2)
+
+	// Query should still work AND both relays should get a copy
+	hz, err := c.GetFreqA()
+	if err != nil {
+		t.Fatalf("GetFreqA() error: %v", err)
+	}
+	if hz != 14053284 {
+		t.Errorf("GetFreqA() = %d, want 14053284", hz)
+	}
+
+	// Give relays time to receive
+	time.Sleep(100 * time.Millisecond)
+
+	if got := buf1.String(); got != "FA00014053284;" {
+		t.Errorf("relay1 got %q, want %q", got, "FA00014053284;")
+	}
+	if got := buf2.String(); got != "FA00014053284;" {
+		t.Errorf("relay2 got %q, want %q", got, "FA00014053284;")
+	}
+
+	// Remove relays
+	c.RemoveRelay(&buf1)
+	c.RemoveRelay(&buf2)
 }
