@@ -141,6 +141,14 @@ func (w *Winkeyer) processByte(b byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.trace {
+		if b >= 0x20 && b <= 0x7E {
+			log.Printf("WK trace: rx 0x%02x '%c' (state=%s)", b, b, stateName(w.state))
+		} else {
+			log.Printf("WK trace: rx 0x%02x (state=%s)", b, stateName(w.state))
+		}
+	}
+
 	switch w.state {
 	case stIdle:
 		w.processIdle(b)
@@ -164,6 +172,9 @@ func (w *Winkeyer) processByte(b byte) {
 func (w *Winkeyer) processIdle(b byte) {
 	if b == 0x00 {
 		w.state = stAdmin
+		if w.trace {
+			log.Printf("WK trace: state idle -> admin")
+		}
 		return
 	}
 
@@ -176,6 +187,9 @@ func (w *Winkeyer) processIdle(b byte) {
 		} else {
 			w.needBytes = n
 			w.state = stParam
+			if w.trace {
+				log.Printf("WK trace: state idle -> param (cmd=0x%02x, need %d bytes)", b, n)
+			}
 		}
 		return
 	}
@@ -199,10 +213,16 @@ func (w *Winkeyer) processAdminSubcode(b byte) {
 	} else {
 		w.needBytes = n
 		w.state = stAdminParam
+		if w.trace {
+			log.Printf("WK trace: state admin -> admin-param (sub=0x%02x, need %d bytes)", b, n)
+		}
 	}
 }
 
 func (w *Winkeyer) execAdmin() {
+	if w.trace {
+		log.Printf("WK trace: admin 0x%02x", w.adminCode)
+	}
 	switch w.adminCode {
 	case 0x01: // Reset
 		w.hostOpen = false
@@ -265,6 +285,9 @@ func (w *Winkeyer) execAdmin() {
 }
 
 func (w *Winkeyer) execCommand() {
+	if w.trace {
+		log.Printf("WK trace: cmd 0x%02x", w.cmdByte)
+	}
 	switch w.cmdByte {
 	case 0x01: // Sidetone
 		// Ignored — K4 handles sidetone
