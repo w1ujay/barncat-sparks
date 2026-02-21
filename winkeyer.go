@@ -63,6 +63,9 @@ type Winkeyer struct {
 	// Serial write mutex (separate from state mutex)
 	writeMu sync.Mutex
 	closed  bool
+
+	// Protocol trace (verbose logging)
+	trace bool
 }
 
 func NewWinkeyer(cat *CATClient) *Winkeyer {
@@ -99,6 +102,18 @@ func (w *Winkeyer) Close() {
 	w.mu.Unlock()
 	if w.port != nil {
 		w.port.Close()
+	}
+}
+
+// SetTrace enables or disables verbose protocol tracing.
+func (w *Winkeyer) SetTrace(enabled bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.trace = enabled
+	if enabled {
+		log.Printf("WK trace: enabled")
+	} else {
+		log.Printf("WK trace: disabled")
 	}
 }
 
@@ -643,5 +658,20 @@ func adminParamCount(subcode byte) int {
 		return 1
 	default:
 		return 0
+	}
+}
+
+func stateName(s int) string {
+	switch s {
+	case stIdle:
+		return "idle"
+	case stAdmin:
+		return "admin"
+	case stAdminParam:
+		return "admin-param"
+	case stParam:
+		return "param"
+	default:
+		return "?"
 	}
 }
