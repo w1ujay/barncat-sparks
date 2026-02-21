@@ -109,6 +109,7 @@ table.mappings .col-rm{width:8%;text-align:center}
 <h2>Options</h2>
 <div>
   <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
+  <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
 </div>
 
 <div class="btn-bar">
@@ -145,6 +146,7 @@ async function init() {
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
   document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
+  document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
 
   // Set transport radio
@@ -283,6 +285,17 @@ function onTransportChange() {
   document.getElementById('catBaudRow').style.display = transport === 'serial' ? '' : 'none';
 }
 
+async function onTraceChange() {
+  const enabled = document.getElementById('protocolTrace').checked;
+  try {
+    await fetch('/api/trace', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: enabled})
+    });
+  } catch(e) { /* server may not be running */ }
+}
+
 function gatherConfig() {
   const transport = document.querySelector('input[name="catTransport"]:checked').value;
   return {
@@ -295,6 +308,7 @@ function gatherConfig() {
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_device: document.getElementById('midiDevice').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
+    protocol_trace: document.getElementById('protocolTrace').checked,
     mappings: mappings.map(m => ({
       action: m.action,
       type: m.type || 'cc',
