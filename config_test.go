@@ -119,6 +119,30 @@ func TestAppConfigBridgeFields(t *testing.T) {
 	}
 }
 
+func TestAppConfigProtocolTrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wk4-config.json")
+
+	cfg := &AppConfig{
+		CATAddress:    "localhost:9299",
+		KeyerSpeed:    25,
+		ProtocolTrace: true,
+	}
+
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatalf("SaveAppConfig: %v", err)
+	}
+
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+
+	if !loaded.ProtocolTrace {
+		t.Error("ProtocolTrace = false, want true")
+	}
+}
+
 func TestAppConfigToMIDIConfig(t *testing.T) {
 	cfg := &AppConfig{
 		MIDIDevice: "DJ2GO2",

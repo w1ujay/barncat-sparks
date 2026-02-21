@@ -18,8 +18,9 @@ type AppConfig struct {
 	CATListen     string         `json:"cat_listen"`
 	KeyerSpeed    int            `json:"keyer_speed"`
 	MIDIDevice    string         `json:"midi_device"`
-	MinimizeToTray bool          `json:"minimize_to_tray"`
-	Mappings      []MappingEntry `json:"mappings"`
+	MinimizeToTray bool           `json:"minimize_to_tray"`
+	ProtocolTrace  bool           `json:"protocol_trace"`
+	Mappings       []MappingEntry `json:"mappings"`
 }
 
 // MappingEntry defines a single MIDI-to-action mapping in the config file.
