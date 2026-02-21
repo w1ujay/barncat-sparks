@@ -131,15 +131,15 @@ func TestGetFreqA(t *testing.T) {
 func TestSetVolume(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
-	c.SetVolume(128)
-	expectCmd(t, cmds, "AG128")
+	c.SetVolume(0, 128)
+	expectCmd(t, cmds, "AG0128")
 }
 
 func TestSetVolumeClamped(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
-	c.SetVolume(999)
-	expectCmd(t, cmds, "AG255")
+	c.SetVolume(0, 999)
+	expectCmd(t, cmds, "AG0255")
 }
 
 func TestBandUp(t *testing.T) {

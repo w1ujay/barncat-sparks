@@ -46,8 +46,13 @@ type Winkeyer struct {
 	paused   bool
 	tuning   bool
 
-	// CW buffer and echo
-	buffer   []byte        // chars waiting to be sent/echoed
+	// CW buffer and echo — supports WinKeyer pointer commands for
+	// random-access writes (callsign correction). Null bytes (0x00) are
+	// placeholders inserted by pointer cmd 0x03; sendLoop skips them.
+	buffer   [BufferSize]byte // fixed CW buffer
+	bufLen   int              // high-water mark (bytes written)
+	readPos  int              // sendLoop read position
+	writePos int              // next write position for bufferChar
 	busy     bool
 	xoff     bool
 	echoDone chan struct{} // closed when sendLoop goroutine exits
@@ -164,7 +169,11 @@ func (w *Winkeyer) processByte(b byte) {
 		w.params = append(w.params, b)
 		if len(w.params) >= w.needBytes {
 			w.execCommand()
-			w.state = stIdle
+			// execCommand may have increased needBytes (variable-length cmd);
+			// only return to idle if all bytes have been collected.
+			if len(w.params) >= w.needBytes {
+				w.state = stIdle
+			}
 		}
 	}
 }
@@ -325,8 +334,8 @@ func (w *Winkeyer) execCommand() {
 		w.writeByte(0x80 | (potVal & 0x3F))
 
 	case 0x08: // Backspace
-		if len(w.buffer) > 0 {
-			w.buffer = w.buffer[:len(w.buffer)-1]
+		if w.writePos > w.readPos {
+			w.writePos--
 			w.updateXoff()
 		}
 
@@ -383,8 +392,47 @@ func (w *Winkeyer) execCommand() {
 	case 0x15: // Request status
 		w.sendStatusLocked()
 
-	case 0x16: // Pointer command
-		// Ignored
+	case 0x16: // Pointer command (variable-length)
+		sub := w.params[0]
+		if sub != 0x00 && len(w.params) == 1 {
+			// Subcmds 01 (overwrite), 02 (append), 03 (add nulls) need one more byte
+			w.needBytes = 2
+			return
+		}
+		switch sub {
+		case 0x00: // Reset buffer pointer to start
+			w.writePos = 0
+		case 0x01: // Move pointer to position (overwrite mode)
+			pos := int(w.params[1])
+			if pos < BufferSize {
+				w.writePos = pos
+			}
+		case 0x02: // Move pointer to position (append mode)
+			pos := int(w.params[1])
+			if pos < BufferSize {
+				w.writePos = pos
+			}
+		case 0x03: // Add nulls (create space for corrections)
+			count := int(w.params[1])
+			end := w.writePos + count
+			if end > BufferSize {
+				end = BufferSize
+			}
+			for i := w.writePos; i < end; i++ {
+				w.buffer[i] = 0
+			}
+			w.writePos = end
+			if end > w.bufLen {
+				w.bufLen = end
+			}
+		}
+		if w.trace {
+			if len(w.params) == 1 {
+				log.Printf("WK trace: pointer sub=0x%02x writePos=%d", sub, w.writePos)
+			} else {
+				log.Printf("WK trace: pointer sub=0x%02x param=0x%02x writePos=%d", sub, w.params[1], w.writePos)
+			}
+		}
 
 	case 0x17: // Dit/dah ratio
 		// Ignored
@@ -431,17 +479,22 @@ func (w *Winkeyer) execCommand() {
 }
 
 // bufferChar adds a character to the CW buffer and triggers sending.
+// Writes at the current writePos (set by pointer commands).
 // Must be called with w.mu held.
 func (w *Winkeyer) bufferChar(ch byte) {
 	ch = byte(unicode.ToUpper(rune(ch)))
 
-	if len(w.buffer) >= BufferSize {
+	if w.writePos >= BufferSize {
 		return // Buffer full, drop character
 	}
 
-	w.buffer = append(w.buffer, ch)
+	w.buffer[w.writePos] = ch
+	w.writePos++
+	if w.writePos > w.bufLen {
+		w.bufLen = w.writePos
+	}
 	if w.trace {
-		log.Printf("WK trace: buffer '%c' (%d/%d)", ch, len(w.buffer), BufferSize)
+		log.Printf("WK trace: buffer '%c' @%d (len=%d)", ch, w.writePos-1, w.bufLen)
 	}
 	wasBusy := w.busy
 	w.busy = true
@@ -458,8 +511,22 @@ func (w *Winkeyer) bufferChar(ch byte) {
 
 // sendLoop drains the buffer, sends KY commands, and echoes characters.
 // Runs in its own goroutine. done is closed on exit; cancel is monitored for abort.
+// Null bytes (0x00) in the buffer are placeholders from pointer commands and are skipped.
+//
+// Automatic PTT: TX; is sent before the first KY command, and RX; is sent
+// when the buffer empties or the loop is cancelled/paused.
 func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	defer close(done)
+
+	pttAsserted := false
+	defer func() {
+		if pttAsserted {
+			w.cat.SetPTT(false)
+			if w.trace {
+				log.Printf("WK trace: auto PTT off")
+			}
+		}
+	}()
 
 	// Brief coalescing delay — at 1200 baud bytes arrive every ~9ms,
 	// wait to accumulate a few chars before sending the first chunk.
@@ -477,7 +544,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		}
 
 		w.mu.Lock()
-		if len(w.buffer) == 0 || w.paused {
+		if w.paused {
 			w.busy = false
 			w.xoff = false
 			w.sendStatusLocked()
@@ -485,21 +552,45 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 			return
 		}
 
-		// Take a chunk for KY command, splitting at word boundaries
-		// so any inter-chunk timing jitter falls on natural word spaces.
-		n := len(w.buffer)
-		if n > KYChunkSize {
-			n = KYChunkSize
-		}
-		for i := 0; i < n; i++ {
-			if w.buffer[i] == ' ' {
-				n = i + 1 // include the trailing space
-				break
+		// Build a chunk from the buffer, stopping at null placeholders
+		// (reserved space for corrections). No word-boundary splitting —
+		// larger chunks reduce inter-KY gaps that cause extra spacing.
+		var chunk []byte
+		for w.readPos < w.bufLen && len(chunk) < KYChunkSize {
+			ch := w.buffer[w.readPos]
+			if ch == 0 {
+				break // stop at null — don't advance past it
 			}
+			w.readPos++
+			chunk = append(chunk, ch)
 		}
-		chunk := make([]byte, n)
-		copy(chunk, w.buffer[:n])
-		w.buffer = w.buffer[n:]
+
+		if len(chunk) == 0 {
+			// Skip consecutive null placeholders (reserved space from
+			// pointer cmd 0x03). Corrections should already be written
+			// by now — the echo timing of the previous chunk provides
+			// sufficient delay for the host to fill positions via
+			// pointer commands.
+			skipped := false
+			for w.readPos < w.bufLen && w.buffer[w.readPos] == 0 {
+				w.readPos++
+				skipped = true
+			}
+			if skipped {
+				if w.trace {
+					log.Printf("WK trace: skipped nulls, readPos=%d", w.readPos)
+				}
+				w.mu.Unlock()
+				continue
+			}
+			// Buffer truly empty
+			w.busy = false
+			w.xoff = false
+			w.sendStatusLocked()
+			w.mu.Unlock()
+			return
+		}
+
 		wpm := w.wpm
 		echoEnabled := w.modeReg&0x04 != 0
 		w.updateXoff()
@@ -510,6 +601,15 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		case <-cancel:
 			return
 		default:
+		}
+
+		// Assert PTT before the first KY command
+		if !pttAsserted {
+			w.cat.SetPTT(true)
+			pttAsserted = true
+			if w.trace {
+				log.Printf("WK trace: auto PTT on")
+			}
 		}
 
 		// Send KY command to K4
@@ -540,9 +640,11 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 // Must be called with w.mu held.
 func (w *Winkeyer) clearBuffer() {
 	if w.trace {
-		log.Printf("WK trace: clear (was %d chars)", len(w.buffer))
+		log.Printf("WK trace: clear (was %d chars)", w.bufLen-w.readPos)
 	}
-	w.buffer = nil
+	w.bufLen = 0
+	w.readPos = 0
+	w.writePos = 0
 	w.busy = false
 	w.xoff = false
 	w.paused = false
@@ -555,9 +657,10 @@ func (w *Winkeyer) clearBuffer() {
 }
 
 func (w *Winkeyer) updateXoff() {
-	if len(w.buffer) >= XoffThreshold {
+	remaining := w.bufLen - w.readPos
+	if remaining >= XoffThreshold {
 		w.xoff = true
-	} else if len(w.buffer) < XonThreshold {
+	} else if remaining < XonThreshold {
 		w.xoff = false
 	}
 }
@@ -648,8 +751,8 @@ func paramCount(cmd byte) int {
 		return 1
 	case 0x15: // Request status
 		return 0
-	case 0x16: // Pointer
-		return 3
+	case 0x16: // Pointer (variable: nn=00 needs 1, others need 2)
+		return 1
 	case 0x17: // Ratio
 		return 1
 	case 0x18: // Buffered PTT

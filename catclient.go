@@ -235,15 +235,43 @@ func (c *CATClient) GetFreqA() (int, error) {
 	return 0, fmt.Errorf("FA query timeout")
 }
 
-// SetVolume sets the K4 audio gain (0-255).
-func (c *CATClient) SetVolume(level int) error {
+// SetVolume sets the K4 audio gain (0-255) for a receiver.
+// recv: 0 = main (VFO A), 1 = sub (VFO B).
+func (c *CATClient) SetVolume(recv, level int) error {
 	if level < 0 {
 		level = 0
 	}
 	if level > 255 {
 		level = 255
 	}
-	cmd := fmt.Sprintf("AG%03d;", level)
+	cmd := fmt.Sprintf("AG%d%03d;", recv&1, level)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetRFGain sets the K4 RF gain (0-250) for a receiver.
+// recv: 0 = main (VFO A), 1 = sub (VFO B).
+func (c *CATClient) SetRFGain(recv, level int) error {
+	if level < 0 {
+		level = 0
+	}
+	if level > 250 {
+		level = 250
+	}
+	cmd := fmt.Sprintf("RG%d%03d;", recv&1, level)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetPower sets the K4 transmit power (0-110 watts).
+func (c *CATClient) SetPower(watts int) error {
+	if watts < 0 {
+		watts = 0
+	}
+	if watts > 110 {
+		watts = 110
+	}
+	cmd := fmt.Sprintf("PC%03d;", watts)
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }
@@ -271,4 +299,124 @@ func (c *CATClient) SelectVFO(ab int) error {
 func (c *CATClient) SwapVFO() error {
 	log.Printf("CAT: SWT11;")
 	return c.send("SWT11;")
+}
+
+// VFOAtoB copies VFO A frequency to VFO B.
+func (c *CATClient) VFOAtoB() error {
+	hz, err := c.GetFreqA()
+	if err != nil {
+		return err
+	}
+	return c.SetFreqB(hz)
+}
+
+// VFOBtoA copies VFO B frequency to VFO A.
+func (c *CATClient) VFOBtoA() error {
+	hz, err := c.GetFreqB()
+	if err != nil {
+		return err
+	}
+	return c.SetFreqA(hz)
+}
+
+// GetFreqB queries VFO B frequency from the K4. Returns Hz.
+func (c *CATClient) GetFreqB() (int, error) {
+	if err := c.send("FB;"); err != nil {
+		return 0, err
+	}
+	select {
+	case resp := <-c.respCh:
+		if strings.HasPrefix(resp, "FB") {
+			var hz int
+			fmt.Sscanf(resp[2:], "%d", &hz)
+			return hz, nil
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+	return 0, fmt.Errorf("FB query timeout")
+}
+
+// SetRIT sets RIT on or off.
+func (c *CATClient) SetRIT(on bool) error {
+	cmd := "RT0;"
+	if on {
+		cmd = "RT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// ClearRIT clears the RIT offset to zero.
+func (c *CATClient) ClearRIT() error {
+	log.Printf("CAT: RC;")
+	return c.send("RC;")
+}
+
+// SetXIT sets XIT on or off.
+func (c *CATClient) SetXIT(on bool) error {
+	cmd := "XT0;"
+	if on {
+		cmd = "XT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNB sets Noise Blanker on or off.
+func (c *CATClient) SetNB(on bool) error {
+	cmd := "NB0;"
+	if on {
+		cmd = "NB1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNR sets Noise Reduction on or off.
+func (c *CATClient) SetNR(on bool) error {
+	cmd := "NR0;"
+	if on {
+		cmd = "NR1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetSplit sets Split mode on or off.
+func (c *CATClient) SetSplit(on bool) error {
+	cmd := "FT0;"
+	if on {
+		cmd = "FT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetFilterBW sets the IF filter bandwidth in Hz. Uses main receiver (0).
+func (c *CATClient) SetFilterBW(hz int) error {
+	if hz < 50 {
+		hz = 50
+	}
+	if hz > 4000 {
+		hz = 4000
+	}
+	cmd := fmt.Sprintf("BW0%04d;", hz)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SendCWMessage sends a CW text message via the KY command.
+func (c *CATClient) SendCWMessage(text string) error {
+	// Send in chunks of up to 24 chars
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > 24 {
+			chunk = chunk[:24]
+		}
+		text = text[len(chunk):]
+		if err := c.SendKY(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
