@@ -440,6 +440,9 @@ func (w *Winkeyer) bufferChar(ch byte) {
 	}
 
 	w.buffer = append(w.buffer, ch)
+	if w.trace {
+		log.Printf("WK trace: buffer '%c' (%d/%d)", ch, len(w.buffer), BufferSize)
+	}
 	wasBusy := w.busy
 	w.busy = true
 	w.updateXoff()
@@ -511,6 +514,9 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 
 		// Send KY command to K4
 		w.cat.SendKY(string(chunk))
+		if w.trace {
+			log.Printf("WK trace: KY \"%s\" (%d chars)", string(chunk), len(chunk))
+		}
 
 		// Echo characters back at WPM pace
 		for _, ch := range chunk {
@@ -522,6 +528,9 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 			}
 			if echoEnabled {
 				w.writeByte(ch)
+				if w.trace {
+					log.Printf("WK trace: tx echo '%c'", ch)
+				}
 			}
 		}
 	}
@@ -530,6 +539,9 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 // clearBuffer aborts CW and resets buffer state.
 // Must be called with w.mu held.
 func (w *Winkeyer) clearBuffer() {
+	if w.trace {
+		log.Printf("WK trace: clear (was %d chars)", len(w.buffer))
+	}
 	w.buffer = nil
 	w.busy = false
 	w.xoff = false
@@ -561,6 +573,9 @@ func (w *Winkeyer) sendStatusLocked() {
 	}
 	if w.tuning {
 		status |= StatusKeyDown
+	}
+	if w.trace {
+		log.Printf("WK trace: tx status 0x%02x", status)
 	}
 	w.writeByte(status)
 }
