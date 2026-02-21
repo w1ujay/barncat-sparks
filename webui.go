@@ -53,6 +53,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/serial-ports", w.handleSerialPorts)
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
+	mux.HandleFunc("/api/trace", w.handleTrace)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -205,6 +206,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 		w.cat.SetSpeed(w.config.KeyerSpeed)
 		go w.wk.Run()
+		if w.config.ProtocolTrace {
+			w.wk.SetTrace(true)
+		}
 	}
 
 	// Start MIDI if device selected
@@ -332,6 +336,32 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 		actions[i] = a
 	}
 	writeJSON(rw, actions)
+}
+
+func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.running || w.wk == nil {
+		http.Error(rw, "not running", http.StatusBadRequest)
+		return
+	}
+
+	w.wk.SetTrace(req.Enabled)
+	writeJSON(rw, map[string]bool{"enabled": req.Enabled})
 }
 
 func writeJSON(rw http.ResponseWriter, v interface{}) {
