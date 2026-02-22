@@ -24,6 +24,9 @@ import (
 	"syscall"
 )
 
+// version is set at build time via -ldflags "-X main.version=X.Y.Z"
+var version = "0.0.1-rc2"
+
 const defaultConfigFile = "wk4-config.json"
 
 func main() {
@@ -39,7 +42,13 @@ func main() {
 	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("wk4 %s\n", version)
+		return
+	}
 
 	// Handle -midi-list
 	if *midiList {
@@ -68,7 +77,7 @@ func main() {
 	}
 
 	// Otherwise, launch web UI
-	RunWebUI(cfgPath)
+	RunWebUI(cfgPath, version)
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
@@ -138,7 +147,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("wk4: WinKeyer emulator & MIDI controller for K4 (headless)")
+	log.Printf("wk4 %s: WinKeyer emulator & MIDI controller for K4 (headless)", version)
 
 	cat := NewCATClient()
 	switch catTransport {

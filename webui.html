@@ -52,7 +52,7 @@ table.mappings .col-rm{width:8%;text-align:center}
 </head>
 <body>
 
-<h1>wk4 — WinKeyer &amp; MIDI Controller</h1>
+<h1 id="appTitle">wk4 — WinKeyer &amp; MIDI Controller</h1>
 
 <h2>Connection</h2>
 <div class="form-row">
@@ -127,18 +127,23 @@ let mappings = [];
 let statusPoll = null;
 
 async function init() {
-  const [actResp, cfgResp, portsResp, midiResp, statusResp] = await Promise.all([
+  const [actResp, cfgResp, portsResp, midiResp, statusResp, verResp] = await Promise.all([
     fetch('/api/actions'),
     fetch('/api/config'),
     fetch('/api/serial-ports'),
     fetch('/api/midi-devices'),
-    fetch('/api/status')
+    fetch('/api/status'),
+    fetch('/api/version')
   ]);
   actions = await actResp.json();
   const cfg = await cfgResp.json();
   const ports = await portsResp.json();
   const devices = await midiResp.json();
   const status = await statusResp.json();
+  const ver = await verResp.json();
+
+  document.getElementById('appTitle').textContent = 'wk4 ' + ver.version + ' — WinKeyer & MIDI Controller';
+  document.title = 'wk4 ' + ver.version;
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');

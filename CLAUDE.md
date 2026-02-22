@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build (no CGO required)
 go build -o wk4 .
 
-# Cross-compile for Windows
-GOOS=windows go build -o wk4.exe .
+# Cross-compile for Windows (GUI, no console window)
+GOOS=windows go build -ldflags "-H windowsgui" -o wk4.exe .
 
 # Tests
 go test ./...                              # Run tests
