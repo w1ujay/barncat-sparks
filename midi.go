@@ -177,24 +177,38 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		go d.cat.VFOBtoA()
 
 	case "volume":
-		level := ccValue(value, 255, m.Opts)
+		level := ccValue(value, 60, m.Opts)
 		go d.cat.SetVolume(0, level)
 
 	case "volume_b":
-		level := ccValue(value, 255, m.Opts)
+		level := ccValue(value, 60, m.Opts)
 		go d.cat.SetVolume(1, level)
 
 	case "rf_gain":
-		level := ccValue(value, 250, m.Opts)
+		level := ccValue(value, 60, m.Opts)
 		go d.cat.SetRFGain(0, level)
 
 	case "rf_gain_b":
-		level := ccValue(value, 250, m.Opts)
+		level := ccValue(value, 60, m.Opts)
 		go d.cat.SetRFGain(1, level)
 
 	case "power":
-		watts := ccValue(value, 110, m.Opts)
-		go d.cat.SetPower(watts)
+		v := value
+		if optFloat(m.Opts, "invert", 0) != 0 {
+			v = 127 - v
+		}
+		// CC 0-100: 0.1W to 10.0W (0.1W per step, QRP range)
+		// CC 101-127: ~11W to 110W (~3.7W per step, QRO range)
+		if v <= 100 {
+			tenths := v + 1 // 1-101 → 0.1W-10.1W, clamped to 100 max
+			if tenths > 100 {
+				tenths = 100
+			}
+			go d.cat.SetPower(tenths)
+		} else {
+			watts := 11 + (v-101)*99/26 // 11W-110W
+			go d.cat.SetPower(watts * 10)
+		}
 
 	case "speed":
 		wpm := 5 + value*94/127
@@ -238,6 +252,13 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		bw := minHz + value*(maxHz-minHz)/127
 		go d.cat.SetFilterBW(bw)
 
+	case "filter_adjust":
+		step := int(optFloat(m.Opts, "step", 50))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustFilter(delta)
+		}
+
 	case "filter_up":
 		step := int(optFloat(m.Opts, "step", 50))
 		d.adjustFilter(step)
@@ -245,6 +266,18 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 	case "filter_down":
 		step := int(optFloat(m.Opts, "step", 50))
 		d.adjustFilter(-step)
+
+	case "notch":
+		d.notchOn = !d.notchOn
+		go d.cat.SetNotch(d.notchOn)
+
+	case "notch_freq":
+		minHz := int(optFloat(m.Opts, "min", 150))
+		maxHz := int(optFloat(m.Opts, "max", 3000))
+		hz := minHz + value*(maxHz-minHz)/127
+		d.notchOn = true
+		d.notchHz = hz
+		go d.cat.SetNotchFreq(hz)
 
 	case "cw_msg":
 		if m.Opts != nil {

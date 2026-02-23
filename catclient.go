@@ -235,43 +235,63 @@ func (c *CATClient) GetFreqA() (int, error) {
 	return 0, fmt.Errorf("FA query timeout")
 }
 
-// SetVolume sets the K4 audio gain (0-255) for a receiver.
-// recv: 0 = main (VFO A), 1 = sub (VFO B).
+// SetVolume sets the K4 audio gain (0-60) for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: AGnnn; (main) or AG$nnn; (sub).
 func (c *CATClient) SetVolume(recv, level int) error {
 	if level < 0 {
 		level = 0
 	}
-	if level > 255 {
-		level = 255
+	if level > 60 {
+		level = 60
 	}
-	cmd := fmt.Sprintf("AG%d%03d;", recv&1, level)
+	var cmd string
+	if recv == 1 {
+		cmd = fmt.Sprintf("AG$%03d;", level)
+	} else {
+		cmd = fmt.Sprintf("AG%03d;", level)
+	}
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }
 
-// SetRFGain sets the K4 RF gain (0-250) for a receiver.
-// recv: 0 = main (VFO A), 1 = sub (VFO B).
+// SetRFGain sets the K4 RF gain attenuation (0-60 dB) for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: RG-nn; (main) or RG$-nn; (sub).
+// level 0 = no attenuation (full gain), 60 = max attenuation.
 func (c *CATClient) SetRFGain(recv, level int) error {
 	if level < 0 {
 		level = 0
 	}
-	if level > 250 {
-		level = 250
+	if level > 60 {
+		level = 60
 	}
-	cmd := fmt.Sprintf("RG%d%03d;", recv&1, level)
+	var cmd string
+	if recv == 1 {
+		cmd = fmt.Sprintf("RG$-%02d;", level)
+	} else {
+		cmd = fmt.Sprintf("RG-%02d;", level)
+	}
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }
 
-// SetPower sets the K4 transmit power (0-110 watts).
-func (c *CATClient) SetPower(watts int) error {
-	if watts < 0 {
-		watts = 0
+// SetPower sets the K4 transmit power using L (QRP) or H (QRO) range.
+// tenths is power in 0.1W units (e.g., 50 = 5.0W, 500 = 50W).
+// ≤100 (10.0W): uses L range with 0.1W resolution.
+// >100: uses H range with 1W resolution.
+func (c *CATClient) SetPower(tenths int) error {
+	if tenths < 1 {
+		tenths = 1
 	}
-	if watts > 110 {
-		watts = 110
+	var cmd string
+	if tenths <= 100 {
+		cmd = fmt.Sprintf("PC%03dL;", tenths)
+	} else {
+		watts := tenths / 10
+		if watts > 110 {
+			watts = 110
+		}
+		cmd = fmt.Sprintf("PC%03dH;", watts)
 	}
-	cmd := fmt.Sprintf("PC%03d;", watts)
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }
@@ -392,7 +412,8 @@ func (c *CATClient) SetSplit(on bool) error {
 	return c.send(cmd)
 }
 
-// SetFilterBW sets the IF filter bandwidth in Hz. Uses main receiver (0).
+// SetFilterBW sets the IF filter bandwidth in Hz. Uses main receiver.
+// K4 format: BWnnnn; where nnnn is bandwidth in 10 Hz units.
 func (c *CATClient) SetFilterBW(hz int) error {
 	if hz < 50 {
 		hz = 50
@@ -400,7 +421,31 @@ func (c *CATClient) SetFilterBW(hz int) error {
 	if hz > 4000 {
 		hz = 4000
 	}
-	cmd := fmt.Sprintf("BW0%04d;", hz)
+	cmd := fmt.Sprintf("BW%04d;", hz/10)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNotch toggles the manual notch filter on or off. K4 format: NM/; (toggle).
+func (c *CATClient) SetNotch(on bool) error {
+	cmd := "NM0;"
+	if on {
+		cmd = "NM1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNotchFreq sets the manual notch frequency (150-5000 Hz) and enables it.
+// K4 format: NMnnnn1; where nnnn is the notch pitch in Hz.
+func (c *CATClient) SetNotchFreq(hz int) error {
+	if hz < 150 {
+		hz = 150
+	}
+	if hz > 5000 {
+		hz = 5000
+	}
+	cmd := fmt.Sprintf("NM%04d1;", hz)
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }

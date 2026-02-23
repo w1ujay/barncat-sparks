@@ -41,8 +41,11 @@ var ActionRegistry = map[string]ActionDef{
 	"nr":          {Label: "Noise Reduction Toggle"},
 	"split":       {Label: "Split Toggle"},
 	"filter_bw":   {Label: "Filter BW", Options: []OptionDef{{Key: "min", Label: "Min (Hz)", Default: "50"}, {Key: "max", Label: "Max (Hz)", Default: "3000"}}},
-	"filter_up":   {Label: "Filter Wider", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "50"}}},
-	"filter_down": {Label: "Filter Narrower", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "50"}}},
+	"filter_adjust": {Label: "Filter BW Adjust", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "50"}}},
+	"filter_up":     {Label: "Filter Wider", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "50"}}},
+	"filter_down":   {Label: "Filter Narrower", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "50"}}},
+	"notch":       {Label: "Manual Notch Toggle"},
+	"notch_freq":  {Label: "Manual Notch Freq", Options: []OptionDef{{Key: "min", Label: "Min (Hz)", Default: "550"}, {Key: "max", Label: "Max (Hz)", Default: "650"}}},
 	"cw_msg":      {Label: "CW Message", Options: []OptionDef{{Key: "text", Label: "Text", Default: "CQ CQ CQ"}}},
 }
 

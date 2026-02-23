@@ -43,6 +43,8 @@ type MIDIDriver struct {
 	nbOn     bool
 	nrOn     bool
 	splitOn  bool
+	notchOn  bool
+	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
 	filterBW int // current filter BW in Hz (0 = unknown, default 500)
 }
 
