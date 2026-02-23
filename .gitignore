@@ -1,5 +1,4 @@
-barncat-sparks
-barncat-sparks.exe
+bin/
 *.log
 *.syso
 .worktrees/

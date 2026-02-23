@@ -16,10 +16,12 @@ fi
 
 # Windows (64-bit, GUI subsystem — no console window)
 echo "  barncat-sparks.exe (windows/amd64)"
-GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o barncat-sparks.exe .
+mkdir -p bin
+
+GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o bin/barncat-sparks.exe .
 
 # Linux
 echo "  barncat-sparks (linux/amd64)"
-GOOS=linux GOARCH=amd64 go build -o barncat-sparks .
+GOOS=linux GOARCH=amd64 go build -o bin/barncat-sparks .
 
 echo "Done."
