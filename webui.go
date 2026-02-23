@@ -40,7 +40,7 @@ func RunWebUI(configPath, version string) {
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("wk4 %s: WinKeyer emulator & MIDI controller for K4", version)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", version)
 
 	w := &WebUI{
 		config:    cfg,
@@ -82,7 +82,7 @@ func RunWebUI(configPath, version string) {
 		close(serverDone)
 	}()
 
-	waitForGUI(url, "wk4 "+version, 760, 900) // blocks until exit
+	waitForGUI(url, "BarnCat Sparks "+version, 760, 900) // blocks until exit
 
 	w.Shutdown()
 	<-serverDone

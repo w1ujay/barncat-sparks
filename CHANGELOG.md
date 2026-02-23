@@ -29,6 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Action registry with configurable options per mapping
 - Web UI with dark theme for configuration and control
 - Serial port and MIDI device enumeration
-- Config persistence to `wk4-config.json`
+- Config persistence to `sparks-config.json`
 - Headless CLI mode (backwards compatible with original interface)
 - Protocol trace logging for debugging WinKeyer communication

@@ -6,10 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build (no CGO required)
-go build -o wk4 .
+go build -o barncat-sparks .
 
 # Cross-compile for Windows (GUI, no console window)
-GOOS=windows go build -ldflags "-H windowsgui" -o wk4.exe .
+GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe .
 
 # Tests
 go test ./...                              # Run tests
@@ -20,12 +20,12 @@ go vet ./...                               # Lint
 
 ### Running Modes
 
-- **Web UI (default):** `./wk4` — starts an HTTP server on localhost and opens the browser. Configure serial port, CAT address, MIDI device, and mappings. Settings saved to `wk4-config.json`.
-- **Headless (CLI):** `./wk4 -port COM5 -midi DJ2GO2` — backwards-compatible CLI mode, activated when `-port`, `-midi`, or `-nogui` flags are present.
+- **Web UI (default):** `./barncat-sparks` — starts an HTTP server on localhost and opens the browser. Configure serial port, CAT address, MIDI device, and mappings. Settings saved to `sparks-config.json`.
+- **Headless (CLI):** `./barncat-sparks -port COM5 -midi DJ2GO2` — backwards-compatible CLI mode, activated when `-port`, `-midi`, or `-nogui` flags are present.
 
 ## Architecture
 
-wk4 is a **WinKeyer3 emulator and MIDI controller for the Elecraft K4** radio. It bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands, and optionally connects a MIDI controller for hands-on radio control.
+BarnCat Sparks is a **WinKeyer3 emulator and MIDI controller for the Elecraft K4** radio. It bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands, and optionally connects a MIDI controller for hands-on radio control.
 
 ### Data Flow
 
@@ -44,7 +44,7 @@ N1MM Logger ↔ TCP ↔ CATServer (catserver.go) ──→ CATClient ──→ s
 
 - **`webui.html`** — Single-page web UI embedded via `go:embed`. Dark-themed HTML with inline CSS and JS. Connection (serial port, CAT address, keyer speed), MIDI (device, mapping table), Options, Start/Stop, and status bar sections. Communicates with the Go backend via JSON REST API.
 
-- **`config.go`** — `AppConfig` struct that holds all wk4 settings (serial port, CAT address/transport/serial/baud/listen, keyer speed, MIDI device, mappings). Serializes to/from `wk4-config.json`. Includes `ToMIDIConfig()` to convert to the existing `MIDIConfig` format, and `listSerialPorts()` for serial port enumeration.
+- **`config.go`** — `AppConfig` struct that holds all settings (serial port, CAT address/transport/serial/baud/listen, keyer speed, MIDI device, mappings). Serializes to/from `sparks-config.json`. Includes `ToMIDIConfig()` to convert to the existing `MIDIConfig` format, and `listSerialPorts()` for serial port enumeration.
 
 - **`actions.go`** — Action registry (`ActionRegistry`) mapping action names to human-readable labels and configurable options. Used by the web UI to populate dropdowns and option fields. `ActionNames()` returns sorted names for UI display.
 
@@ -52,7 +52,7 @@ N1MM Logger ↔ TCP ↔ CATServer (catserver.go) ──→ CATClient ──→ s
 
 - **`catclient.go`** — Transport-agnostic CAT client. Connects to radios via TCP (`ConnectTCP`) or serial (`ConnectSerial`, using `io.ReadWriteCloser`). Sends Elecraft CAT commands (`KY` for CW text, `KS` for speed, `TX`/`RX` for PTT, `FA`/`FB` for VFO frequency, `AG` for volume, `BU`/`BD` for band, `FT`/`SWT` for VFO select). Reads responses split on semicolons. Supports response relay (`AddRelay`/`RemoveRelay`) for CATServer to broadcast to multiple TCP clients.
 
-- **`catserver.go`** — TCP relay server. Accepts multiple TCP clients and relays CAT commands to/from the CATClient's transport (serial or TCP). Enables N1MM or a remote wk4 instance to connect to a serial radio over the network. Responses are broadcast to all connected clients.
+- **`catserver.go`** — TCP relay server. Accepts multiple TCP clients and relays CAT commands to/from the CATClient's transport (serial or TCP). Enables N1MM or a remote instance to connect to a serial radio over the network. Responses are broadcast to all connected clients.
 
 - **`midi.go`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Loads a JSON config file (`midi-config.json`) that maps MIDI events (CC, Note On/Off) to K4 actions (VFO tune, volume, speed, PTT, band up/down, VFO A/B/swap). O(1) mapping lookup via `midiKey`.
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wk4 — WinKeyer &amp; MIDI Controller</title>
+<title>BarnCat Sparks — WinKeyer &amp; MIDI Controller</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -52,7 +52,7 @@ table.mappings .col-rm{width:8%;text-align:center}
 </head>
 <body>
 
-<h1 id="appTitle">wk4 — WinKeyer &amp; MIDI Controller</h1>
+<h1 id="appTitle">BarnCat Sparks — WinKeyer &amp; MIDI Controller</h1>
 
 <h2>Connection</h2>
 <div class="form-row">
@@ -142,8 +142,8 @@ async function init() {
   const status = await statusResp.json();
   const ver = await verResp.json();
 
-  document.getElementById('appTitle').textContent = 'wk4 ' + ver.version + ' — WinKeyer & MIDI Controller';
-  document.title = 'wk4 ' + ver.version;
+  document.getElementById('appTitle').textContent = 'BarnCat Sparks ' + ver.version + ' — WinKeyer & MIDI Controller';
+  document.title = 'BarnCat Sparks ' + ver.version;
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');

@@ -14,7 +14,7 @@ func waitForGUI(url, title string, width, height int) {
 	// Try app-mode browser (chromeless window), fall back to default browser
 	var browser *appBrowser
 	if browserPath := findBrowser(); browserPath != "" {
-		dataDir, err := os.MkdirTemp("", "wk4-browser-*")
+		dataDir, err := os.MkdirTemp("", "sparks-browser-*")
 		if err != nil {
 			log.Printf("webui: temp dir failed, falling back to default browser: %v", err)
 			go openBrowser(url)
@@ -40,13 +40,13 @@ func waitForGUI(url, title string, width, height int) {
 	if browser != nil {
 		select {
 		case <-sig:
-			log.Println("wk4: signal received, shutting down")
+			log.Println("sparks: signal received, shutting down")
 			browser.kill()
 		case <-browser.done:
-			log.Println("wk4: browser closed, shutting down")
+			log.Println("sparks: browser closed, shutting down")
 		}
 	} else {
 		<-sig
-		log.Println("wk4: signal received, shutting down")
+		log.Println("sparks: signal received, shutting down")
 	}
 }

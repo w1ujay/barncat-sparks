@@ -1,4 +1,4 @@
-module github.com/ujay/wk4
+module github.com/ujay/barncat-sparks
 
 go 1.21
 

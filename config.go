@@ -8,7 +8,7 @@ import (
 	"go.bug.st/serial"
 )
 
-// AppConfig holds all wk4 settings, serialized to wk4-config.json.
+// AppConfig holds all BarnCat Sparks settings, serialized to sparks-config.json.
 type AppConfig struct {
 	SerialPort    string         `json:"serial_port"`
 	CATAddress    string         `json:"cat_address"`

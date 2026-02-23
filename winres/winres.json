@@ -10,10 +10,10 @@
     "#1": {
       "0409": {
         "identity": {
-          "name": "wk4",
+          "name": "barncat-sparks",
           "version": "0.0.1.0"
         },
-        "description": "WinKeyer emulator & MIDI controller for K4",
+        "description": "BarnCat Sparks — WinKeyer emulator & MIDI controller for K4",
         "minimum-os": "win10",
         "execution-level": "as invoker",
         "ui-access": false,
@@ -41,11 +41,11 @@
         "info": {
           "0409": {
             "CompanyName": "",
-            "FileDescription": "WinKeyer emulator & MIDI controller for K4",
+            "FileDescription": "BarnCat Sparks — WinKeyer emulator & MIDI controller for K4",
             "FileVersion": "0.0.1-rc2",
-            "InternalName": "wk4",
-            "OriginalFilename": "wk4.exe",
-            "ProductName": "wk4",
+            "InternalName": "barncat-sparks",
+            "OriginalFilename": "barncat-sparks.exe",
+            "ProductName": "BarnCat Sparks",
             "ProductVersion": "0.0.1-rc2"
           }
         }

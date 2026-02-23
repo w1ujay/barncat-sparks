@@ -1,15 +1,17 @@
-# wk4
+# BarnCat Sparks
 
 WinKeyer3 emulator and MIDI controller for the Elecraft K4 radio.
 
-wk4 bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands. It also supports MIDI controllers (e.g., Numark DJ2GO2) for hands-on control of VFO tuning, volume, band switching, PTT, and more.
+BarnCat Sparks bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands. It also supports MIDI controllers (e.g., Numark DJ2GO2) for hands-on control of VFO tuning, volume, band switching, PTT, and more.
+
+Part of the **BarnCat** family of ham radio software.
 
 ## How It Works
 
 ```
-Logger (N1MM, etc.) <-> virtual serial port <-> wk4 <-> K4 radio (TCP or serial)
-MIDI controller (USB) <-> wk4 ----------------/
-Browser / WebView2 <-> wk4 (config/control) --/
+Logger (N1MM, etc.) <-> virtual serial port <-> sparks <-> K4 radio (TCP or serial)
+MIDI controller (USB) <-> sparks ----------------/
+Browser / WebView2 <-> sparks (config/control) --/
 ```
 
 Both subsystems are optional and can run independently or together, sharing the same CAT connection to the K4.
@@ -28,10 +30,10 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ```bash
 # Build for current platform
-go build -o wk4 .
+go build -o barncat-sparks .
 
 # Cross-compile for Windows (GUI, no console window)
-GOOS=windows go build -ldflags "-H windowsgui" -o wk4.exe .
+GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe .
 
 # Or use the build script
 ./build.sh
@@ -52,15 +54,15 @@ No CGO required. The Windows build uses `winmm.dll` syscalls for MIDI and `jchv/
 ### Web UI (default)
 
 ```bash
-wk4
+barncat-sparks
 ```
 
-Double-click or run without flags to launch the web UI. Configure serial port, CAT address, MIDI device, and mappings in a single window. Settings are saved to `wk4-config.json`.
+Double-click or run without flags to launch the web UI. Configure serial port, CAT address, MIDI device, and mappings in a single window. Settings are saved to `sparks-config.json`.
 
 ### Headless (CLI)
 
 ```bash
-wk4 -port COM5 -midi DJ2GO2 -cat k4.local:9200
+barncat-sparks -port COM5 -midi DJ2GO2 -cat k4.local:9200
 ```
 
 CLI mode activates when `-port`, `-midi`, or `-nogui` flags are present.
@@ -83,7 +85,7 @@ CLI mode activates when `-port`, `-midi`, or `-nogui` flags are present.
 
 **Windows (com0com):**
 
-Install com0com and create a port pair (e.g., COM4/COM5). Point N1MM at COM4, point wk4 at COM5.
+Install com0com and create a port pair (e.g., COM4/COM5). Point N1MM at COM4, point barncat-sparks at COM5.
 
 **Linux (socat):**
 
@@ -91,11 +93,11 @@ Install com0com and create a port pair (e.g., COM4/COM5). Point N1MM at COM4, po
 socat -d -d pty,raw,echo=0 pty,raw,echo=0
 ```
 
-This prints two `/dev/pts/N` paths. Point your logger at one, wk4 at the other.
+This prints two `/dev/pts/N` paths. Point your logger at one, barncat-sparks at the other.
 
 ## MIDI Controller Support
 
-wk4 can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via the web UI or a JSON config file. MIDI support requires Windows (`winmm.dll`).
+BarnCat Sparks can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via the web UI or a JSON config file. MIDI support requires Windows (`winmm.dll`).
 
 ### Supported Actions
 
@@ -148,12 +150,18 @@ Edit `midi-config.json` to map your controller's MIDI events to actions:
 
 ## Protocol Details
 
-- Implements K1EL WinKeyer binary protocol (reports as WK version 31 / WK3.1)
+- Implements the [K1EL WinKeyer serial protocol](https://www.k1elsystems.com/WK3IC.html) (reports as WK version 31 / WK3.1)
 - Serial: 1200 baud, 8N2 (8 data bits, no parity, 2 stop bits)
 - 64-byte CW character buffer with XON/XOFF flow control
 - Character echo timed to actual WPM using PARIS standard (1 dit = 1200/WPM ms)
 - CW text sent in word-sized chunks (split on spaces) for responsive abort
 - K4 CAT commands per the [K4 Programmer's Reference](https://elecraft.com/pages/programmers-reference-manuals)
+- See [`docs/winkeyer-protocol.md`](docs/winkeyer-protocol.md) for the full WinKeyer command reference
+
+### Acknowledgment
+
+The WinKeyer serial protocol was designed by Steven T. Elliott, [K1EL](https://www.k1elsystems.com/).
+WinKeyer is a product of K1EL Systems. BarnCat Sparks is not affiliated with or endorsed by K1EL.
 
 ## License
 

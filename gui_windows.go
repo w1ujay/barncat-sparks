@@ -32,7 +32,7 @@ func waitForGUI(url, title string, width, height int) {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		log.Println("wk4: signal received, shutting down")
+		log.Println("sparks: signal received, shutting down")
 		return
 	}
 	defer w.Destroy()
@@ -42,7 +42,7 @@ func waitForGUI(url, title string, width, height int) {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
-		log.Println("wk4: signal received, shutting down")
+		log.Println("sparks: signal received, shutting down")
 		w.Terminate()
 	}()
 

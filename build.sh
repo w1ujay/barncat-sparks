@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build wk4 for Windows (GUI, no console window) and Linux
+# Build BarnCat Sparks for Windows (GUI, no console window) and Linux
 set -e
 
 VERSION=$(grep 'var version' main.go | sed 's/.*"\(.*\)".*/\1/')
-echo "Building wk4 ${VERSION}..."
+echo "Building BarnCat Sparks ${VERSION}..."
 
 # Generate Windows icon/manifest resources (.syso files)
 if command -v go-winres &>/dev/null; then
@@ -15,11 +15,11 @@ else
 fi
 
 # Windows (64-bit, GUI subsystem — no console window)
-echo "  wk4.exe (windows/amd64)"
-GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o wk4.exe .
+echo "  barncat-sparks.exe (windows/amd64)"
+GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o barncat-sparks.exe .
 
 # Linux
-echo "  wk4 (linux/amd64)"
-GOOS=linux GOARCH=amd64 go build -o wk4 .
+echo "  barncat-sparks (linux/amd64)"
+GOOS=linux GOARCH=amd64 go build -o barncat-sparks .
 
 echo "Done."

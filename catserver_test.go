@@ -95,7 +95,7 @@ func TestCATServerInternalAndExternalCoexist(t *testing.T) {
 	go srv.Run()
 	t.Cleanup(func() { srv.Close() })
 
-	// wk4 internal: send a command through CATClient directly
+	// sparks internal: send a command through CATClient directly
 	cat.SetSpeed(30)
 
 	// This should not break — both paths coexist
