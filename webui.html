@@ -45,6 +45,11 @@ table.mappings .col-rm{width:8%;text-align:center}
 .opts-field input{width:70px}
 .no-mappings{color:#666;font-style:italic;padding:8px 0}
 .mapping-btns{display:flex;gap:6px;margin-top:4px}
+details summary{font-size:0.85em;color:#9cdcfe;cursor:pointer;margin-bottom:4px}
+details summary:hover{color:#569cd6}
+.about{margin-top:18px;padding:12px;background:#252526;border:1px solid #333;border-radius:3px;
+  font-size:0.8em;color:#888;text-align:center}
+.about strong{color:#9cdcfe}
 .radio-group{display:flex;gap:12px}
 .radio-group label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:0.9em}
 .radio-group input[type="radio"]{width:auto;margin:0}
@@ -99,12 +104,14 @@ table.mappings .col-rm{width:8%;text-align:center}
   <label for="midiDevice">Device</label>
   <select id="midiDevice"><option value="">(no MIDI devices)</option></select>
 </div>
-<label>Mappings</label>
-<div id="mappingsContainer"></div>
-<div class="mapping-btns">
-  <button class="secondary" onclick="addMapping()">+ Add</button>
-  <button class="secondary" onclick="removeLastMapping()">- Remove</button>
-</div>
+<details id="mappingsDetails">
+  <summary>Mappings</summary>
+  <div id="mappingsContainer"></div>
+  <div class="mapping-btns">
+    <button class="secondary" onclick="addMapping()">+ Add</button>
+    <button class="secondary" onclick="removeLastMapping()">- Remove</button>
+  </div>
+</details>
 
 <h2>Options</h2>
 <div>
@@ -121,29 +128,32 @@ table.mappings .col-rm{width:8%;text-align:center}
 
 <div class="status-bar" id="statusBar">Status: Stopped</div>
 
+<div class="about" id="aboutSection"></div>
+
 <script>
 let actions = [];
 let mappings = [];
 let statusPoll = null;
 
 async function init() {
-  const [actResp, cfgResp, portsResp, midiResp, statusResp, verResp] = await Promise.all([
+  const [actResp, cfgResp, portsResp, midiResp, statusResp, aboutResp] = await Promise.all([
     fetch('/api/actions'),
     fetch('/api/config'),
     fetch('/api/serial-ports'),
     fetch('/api/midi-devices'),
     fetch('/api/status'),
-    fetch('/api/version')
+    fetch('/api/about')
   ]);
   actions = await actResp.json();
   const cfg = await cfgResp.json();
   const ports = await portsResp.json();
   const devices = await midiResp.json();
   const status = await statusResp.json();
-  const ver = await verResp.json();
+  const about = await aboutResp.json();
 
-  document.getElementById('appTitle').textContent = 'BarnCat Sparks ' + ver.version + ' — WinKeyer & MIDI Controller';
-  document.title = 'BarnCat Sparks ' + ver.version;
+  document.getElementById('appTitle').textContent = 'BarnCat Sparks ' + about.version + ' — WinKeyer & MIDI Controller';
+  document.title = 'BarnCat Sparks ' + about.version;
+  renderAbout(about);
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
@@ -165,6 +175,9 @@ async function init() {
   }
 
   mappings = cfg.mappings || [];
+  if (mappings.length > 0) {
+    document.getElementById('mappingsDetails').open = true;
+  }
   renderMappings();
   applyStatus(status);
 }
@@ -384,6 +397,20 @@ function setStatus(running, msg) {
   const bar = document.getElementById('statusBar');
   bar.textContent = 'Status: ' + msg;
   bar.className = 'status-bar' + (running ? ' running' : '');
+}
+
+function renderAbout(about) {
+  const el = document.getElementById('aboutSection');
+  let html = '<strong>BarnCat Sparks ' + about.version + '</strong><br>' + about.tagline;
+  if (about.contributors && about.contributors.length > 0) {
+    html += '<br><br>Contributors: ' + about.contributors.map(c => {
+      let s = '<strong>' + c.callsign + '</strong>';
+      if (c.name) s += ' (' + c.name + ')';
+      if (c.role) s += ' — ' + c.role;
+      return s;
+    }).join(', ');
+  }
+  el.innerHTML = html;
 }
 
 init();

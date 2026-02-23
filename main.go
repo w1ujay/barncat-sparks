@@ -24,8 +24,7 @@ import (
 	"syscall"
 )
 
-// version is set at build time via -ldflags "-X main.version=X.Y.Z"
-var version = "0.0.1-rc2"
+// Version is defined in about.go
 
 const defaultConfigFile = "sparks-config.json"
 
@@ -46,7 +45,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("sparks %s\n", version)
+		fmt.Printf("sparks %s\n", Version)
 		return
 	}
 
@@ -77,7 +76,7 @@ func main() {
 	}
 
 	// Otherwise, launch web UI
-	RunWebUI(cfgPath, version)
+	RunWebUI(cfgPath)
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
@@ -147,7 +146,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", version)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", Version)
 
 	cat := NewCATClient()
 	switch catTransport {

@@ -22,7 +22,6 @@ type WebUI struct {
 	mu        sync.Mutex
 	config    *AppConfig
 	cfgPath   string
-	version   string
 	running   bool
 	statusMsg string
 	cat       *CATClient
@@ -33,19 +32,18 @@ type WebUI struct {
 }
 
 // RunWebUI starts the web UI on a free localhost port and opens the browser.
-func RunWebUI(configPath, version string) {
+func RunWebUI(configPath string) {
 	cfg, err := LoadAppConfig(configPath)
 	if err != nil {
 		cfg = DefaultAppConfig()
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", version)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", Version)
 
 	w := &WebUI{
 		config:    cfg,
 		cfgPath:   configPath,
-		version:   version,
 		statusMsg: "Stopped",
 	}
 
@@ -60,6 +58,7 @@ func RunWebUI(configPath, version string) {
 	mux.HandleFunc("/api/actions", w.handleActions)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/version", w.handleVersion)
+	mux.HandleFunc("/api/about", w.handleAbout)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,7 +81,7 @@ func RunWebUI(configPath, version string) {
 		close(serverDone)
 	}()
 
-	waitForGUI(url, "BarnCat Sparks "+version, 760, 900) // blocks until exit
+	waitForGUI(url, "BarnCat Sparks "+Version, 760, 900) // blocks until exit
 
 	w.Shutdown()
 	<-serverDone
@@ -381,7 +380,11 @@ func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebUI) handleVersion(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, map[string]string{"version": w.version})
+	writeJSON(rw, map[string]string{"version": Version})
+}
+
+func (w *WebUI) handleAbout(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, GetAboutInfo())
 }
 
 func writeJSON(rw http.ResponseWriter, v interface{}) {

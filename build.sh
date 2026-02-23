@@ -2,7 +2,7 @@
 # Build BarnCat Sparks for Windows (GUI, no console window) and Linux
 set -e
 
-VERSION=$(grep 'var version' main.go | sed 's/.*"\(.*\)".*/\1/')
+VERSION=$(grep 'var Version' about.go | sed 's/.*"\(.*\)".*/\1/')
 echo "Building BarnCat Sparks ${VERSION}..."
 
 # Generate Windows icon/manifest resources (.syso files)
