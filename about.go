@@ -1,7 +1,7 @@
 package main
 
 // Version is set at build time via -ldflags "-X main.Version=X.Y.Z"
-var Version = "0.0.1-rc2"
+var Version = "0.0.1"
 
 // Tagline is the project tribute displayed in the About section.
 var Tagline = "Born from the chaos of the NZ1U Barnstormers Contest Group and the spirit of " +
