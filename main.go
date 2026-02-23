@@ -1,4 +1,4 @@
-// wk4 - WinKeyer emulator and MIDI controller for Elecraft K4
+// BarnCat Sparks - WinKeyer emulator and MIDI controller for Elecraft K4
 //
 // Presents a K1EL WinKeyer3-compatible interface on a serial port,
 // translating Winkeyer protocol commands into K4 CAT commands (KY, KS)
@@ -9,8 +9,8 @@
 //
 // Modes:
 //   - GUI (default): Double-click to launch. Configure serial port, CAT address,
-//     MIDI device, and mappings in a single window. Save settings to wk4-config.json.
-//   - Headless (CLI flags): wk4 -port COM5 -midi DJ2GO2 (backwards compatible)
+//     MIDI device, and mappings in a single window. Save settings to sparks-config.json.
+//   - Headless (CLI flags): barncat-sparks -port COM5 -midi DJ2GO2 (backwards compatible)
 
 package main
 
@@ -24,7 +24,10 @@ import (
 	"syscall"
 )
 
-const defaultConfigFile = "wk4-config.json"
+// version is set at build time via -ldflags "-X main.version=X.Y.Z"
+var version = "0.0.1-rc2"
+
+const defaultConfigFile = "sparks-config.json"
 
 func main() {
 	portName := flag.String("port", "", "Serial port for Winkeyer interface (e.g., COM5, /dev/pts/3)")
@@ -33,13 +36,19 @@ func main() {
 	midiDevice := flag.String("midi", "", "MIDI device name or substring (e.g., DJ2GO2)")
 	midiConfigPath := flag.String("midi-config", "", "Path to MIDI mapping config file")
 	midiList := flag.Bool("midi-list", false, "List available MIDI devices and exit")
-	configFile := flag.String("config", "", "Path to config file (default: wk4-config.json next to executable)")
+	configFile := flag.String("config", "", "Path to config file (default: sparks-config.json next to executable)")
 	catTransport := flag.String("cat-transport", "", "CAT transport: tcp or serial")
 	catSerialPort := flag.String("cat-serial", "", "Serial port for radio CAT (e.g., COM3)")
 	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("sparks %s\n", version)
+		return
+	}
 
 	// Handle -midi-list
 	if *midiList {
@@ -68,7 +77,7 @@ func main() {
 	}
 
 	// Otherwise, launch web UI
-	RunWebUI(cfgPath)
+	RunWebUI(cfgPath, version)
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
@@ -109,10 +118,10 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 
 	if portName == "" && midiDevice == "" {
-		fmt.Fprintln(os.Stderr, "wk4 - WinKeyer emulator & MIDI controller for K4")
+		fmt.Fprintln(os.Stderr, "BarnCat Sparks - WinKeyer emulator & MIDI controller for K4")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Usage: wk4                                        # Launch web UI")
-		fmt.Fprintln(os.Stderr, "       wk4 [-port <serial-port>] [-midi <device>]  # Headless mode")
+		fmt.Fprintln(os.Stderr, "Usage: barncat-sparks                                        # Launch web UI")
+		fmt.Fprintln(os.Stderr, "       barncat-sparks [-port <serial-port>] [-midi <device>]  # Headless mode")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Options:")
 		fmt.Fprintln(os.Stderr, "  -port           Serial port for Winkeyer (e.g., COM5, /dev/pts/3)")
@@ -129,16 +138,16 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		fmt.Fprintln(os.Stderr, "  -nogui          Run in headless mode (no web UI)")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Examples:")
-		fmt.Fprintln(os.Stderr, "  wk4                                             # Web UI mode")
-		fmt.Fprintln(os.Stderr, "  wk4 -port COM5                                  # WinKeyer only")
-		fmt.Fprintln(os.Stderr, "  wk4 -midi DJ2GO2                                # MIDI only")
-		fmt.Fprintln(os.Stderr, "  wk4 -port COM5 -midi DJ2GO2 -cat k4:9299        # Both")
-		fmt.Fprintln(os.Stderr, "  wk4 -cat-transport serial -cat-serial COM3 -cat-listen :9300  # Bridge")
+		fmt.Fprintln(os.Stderr, "  barncat-sparks                                             # Web UI mode")
+		fmt.Fprintln(os.Stderr, "  barncat-sparks -port COM5                                  # WinKeyer only")
+		fmt.Fprintln(os.Stderr, "  barncat-sparks -midi DJ2GO2                                # MIDI only")
+		fmt.Fprintln(os.Stderr, "  barncat-sparks -port COM5 -midi DJ2GO2 -cat k4:9299        # Both")
+		fmt.Fprintln(os.Stderr, "  barncat-sparks -cat-transport serial -cat-serial COM3 -cat-listen :9300  # Bridge")
 		os.Exit(1)
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("wk4: WinKeyer emulator & MIDI controller for K4 (headless)")
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", version)
 
 	cat := NewCATClient()
 	switch catTransport {
@@ -201,5 +210,5 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Println("wk4: shutting down")
+	log.Println("sparks: shutting down")
 }

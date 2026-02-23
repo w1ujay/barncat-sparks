@@ -7,7 +7,7 @@ import (
 
 func TestSaveAndLoadAppConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wk4-config.json")
+	path := filepath.Join(dir, "sparks-config.json")
 
 	cfg := &AppConfig{
 		SerialPort:     "COM5",
@@ -61,7 +61,7 @@ func TestSaveAndLoadAppConfig(t *testing.T) {
 }
 
 func TestLoadAppConfigMissing(t *testing.T) {
-	_, err := LoadAppConfig("/nonexistent/wk4-config.json")
+	_, err := LoadAppConfig("/nonexistent/sparks-config.json")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -85,7 +85,7 @@ func TestLoadAppConfigDefaults(t *testing.T) {
 
 func TestAppConfigBridgeFields(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wk4-config.json")
+	path := filepath.Join(dir, "sparks-config.json")
 
 	cfg := &AppConfig{
 		CATAddress:    "localhost:9299",
@@ -116,6 +116,30 @@ func TestAppConfigBridgeFields(t *testing.T) {
 	}
 	if loaded.CATListen != ":9300" {
 		t.Errorf("CATListen = %q, want :9300", loaded.CATListen)
+	}
+}
+
+func TestAppConfigProtocolTrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sparks-config.json")
+
+	cfg := &AppConfig{
+		CATAddress:    "localhost:9299",
+		KeyerSpeed:    25,
+		ProtocolTrace: true,
+	}
+
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatalf("SaveAppConfig: %v", err)
+	}
+
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+
+	if !loaded.ProtocolTrace {
+		t.Error("ProtocolTrace = false, want true")
 	}
 }
 

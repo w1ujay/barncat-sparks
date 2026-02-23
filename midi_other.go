@@ -30,9 +30,22 @@ type MIDIDriver struct {
 	events    chan midiEvent
 
 	// VFO tuning state (accessed only from event loop goroutine)
-	vfoFreq    int
-	vfoKnown   bool
-	lastTuneAt time.Time
+	vfoFreq     int
+	vfoKnown    bool
+	lastTuneAt  time.Time
+	vfoBFreq    int
+	vfoBKnown   bool
+	lastTuneBAt time.Time
+
+	// Toggle state for button actions (accessed only from event loop goroutine)
+	ritOn    bool
+	xitOn    bool
+	nbOn     bool
+	nrOn     bool
+	splitOn  bool
+	notchOn  bool
+	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
+	filterBW int // current filter BW in Hz (0 = unknown, default 500)
 }
 
 // NewMIDIDriver creates a new MIDI driver.

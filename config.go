@@ -8,7 +8,7 @@ import (
 	"go.bug.st/serial"
 )
 
-// AppConfig holds all wk4 settings, serialized to wk4-config.json.
+// AppConfig holds all BarnCat Sparks settings, serialized to sparks-config.json.
 type AppConfig struct {
 	SerialPort    string         `json:"serial_port"`
 	CATAddress    string         `json:"cat_address"`
@@ -18,8 +18,9 @@ type AppConfig struct {
 	CATListen     string         `json:"cat_listen"`
 	KeyerSpeed    int            `json:"keyer_speed"`
 	MIDIDevice    string         `json:"midi_device"`
-	MinimizeToTray bool          `json:"minimize_to_tray"`
-	Mappings      []MappingEntry `json:"mappings"`
+	MinimizeToTray bool           `json:"minimize_to_tray"`
+	ProtocolTrace  bool           `json:"protocol_trace"`
+	Mappings       []MappingEntry `json:"mappings"`
 }
 
 // MappingEntry defines a single MIDI-to-action mapping in the config file.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wk4 — WinKeyer &amp; MIDI Controller</title>
+<title>BarnCat Sparks — WinKeyer &amp; MIDI Controller</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -52,7 +52,7 @@ table.mappings .col-rm{width:8%;text-align:center}
 </head>
 <body>
 
-<h1>wk4 — WinKeyer &amp; MIDI Controller</h1>
+<h1 id="appTitle">BarnCat Sparks — WinKeyer &amp; MIDI Controller</h1>
 
 <h2>Connection</h2>
 <div class="form-row">
@@ -109,6 +109,7 @@ table.mappings .col-rm{width:8%;text-align:center}
 <h2>Options</h2>
 <div>
   <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
+  <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
 </div>
 
 <div class="btn-bar">
@@ -126,18 +127,23 @@ let mappings = [];
 let statusPoll = null;
 
 async function init() {
-  const [actResp, cfgResp, portsResp, midiResp, statusResp] = await Promise.all([
+  const [actResp, cfgResp, portsResp, midiResp, statusResp, verResp] = await Promise.all([
     fetch('/api/actions'),
     fetch('/api/config'),
     fetch('/api/serial-ports'),
     fetch('/api/midi-devices'),
-    fetch('/api/status')
+    fetch('/api/status'),
+    fetch('/api/version')
   ]);
   actions = await actResp.json();
   const cfg = await cfgResp.json();
   const ports = await portsResp.json();
   const devices = await midiResp.json();
   const status = await statusResp.json();
+  const ver = await verResp.json();
+
+  document.getElementById('appTitle').textContent = 'BarnCat Sparks ' + ver.version + ' — WinKeyer & MIDI Controller';
+  document.title = 'BarnCat Sparks ' + ver.version;
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
@@ -145,6 +151,7 @@ async function init() {
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
   document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
+  document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
 
   // Set transport radio
@@ -283,6 +290,17 @@ function onTransportChange() {
   document.getElementById('catBaudRow').style.display = transport === 'serial' ? '' : 'none';
 }
 
+async function onTraceChange() {
+  const enabled = document.getElementById('protocolTrace').checked;
+  try {
+    await fetch('/api/trace', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: enabled})
+    });
+  } catch(e) { /* server may not be running */ }
+}
+
 function gatherConfig() {
   const transport = document.querySelector('input[name="catTransport"]:checked').value;
   return {
@@ -295,6 +313,7 @@ function gatherConfig() {
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_device: document.getElementById('midiDevice').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
+    protocol_trace: document.getElementById('protocolTrace').checked,
     mappings: mappings.map(m => ({
       action: m.action,
       type: m.type || 'cc',

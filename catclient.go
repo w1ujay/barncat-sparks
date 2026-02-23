@@ -235,15 +235,63 @@ func (c *CATClient) GetFreqA() (int, error) {
 	return 0, fmt.Errorf("FA query timeout")
 }
 
-// SetVolume sets the K4 audio gain (0-255).
-func (c *CATClient) SetVolume(level int) error {
+// SetVolume sets the K4 audio gain (0-60) for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: AGnnn; (main) or AG$nnn; (sub).
+func (c *CATClient) SetVolume(recv, level int) error {
 	if level < 0 {
 		level = 0
 	}
-	if level > 255 {
-		level = 255
+	if level > 60 {
+		level = 60
 	}
-	cmd := fmt.Sprintf("AG%03d;", level)
+	var cmd string
+	if recv == 1 {
+		cmd = fmt.Sprintf("AG$%03d;", level)
+	} else {
+		cmd = fmt.Sprintf("AG%03d;", level)
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetRFGain sets the K4 RF gain attenuation (0-60 dB) for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: RG-nn; (main) or RG$-nn; (sub).
+// level 0 = no attenuation (full gain), 60 = max attenuation.
+func (c *CATClient) SetRFGain(recv, level int) error {
+	if level < 0 {
+		level = 0
+	}
+	if level > 60 {
+		level = 60
+	}
+	var cmd string
+	if recv == 1 {
+		cmd = fmt.Sprintf("RG$-%02d;", level)
+	} else {
+		cmd = fmt.Sprintf("RG-%02d;", level)
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetPower sets the K4 transmit power using L (QRP) or H (QRO) range.
+// tenths is power in 0.1W units (e.g., 50 = 5.0W, 500 = 50W).
+// ≤100 (10.0W): uses L range with 0.1W resolution.
+// >100: uses H range with 1W resolution.
+func (c *CATClient) SetPower(tenths int) error {
+	if tenths < 1 {
+		tenths = 1
+	}
+	var cmd string
+	if tenths <= 100 {
+		cmd = fmt.Sprintf("PC%03dL;", tenths)
+	} else {
+		watts := tenths / 10
+		if watts > 110 {
+			watts = 110
+		}
+		cmd = fmt.Sprintf("PC%03dH;", watts)
+	}
 	log.Printf("CAT: %s", cmd)
 	return c.send(cmd)
 }
@@ -271,4 +319,149 @@ func (c *CATClient) SelectVFO(ab int) error {
 func (c *CATClient) SwapVFO() error {
 	log.Printf("CAT: SWT11;")
 	return c.send("SWT11;")
+}
+
+// VFOAtoB copies VFO A frequency to VFO B.
+func (c *CATClient) VFOAtoB() error {
+	hz, err := c.GetFreqA()
+	if err != nil {
+		return err
+	}
+	return c.SetFreqB(hz)
+}
+
+// VFOBtoA copies VFO B frequency to VFO A.
+func (c *CATClient) VFOBtoA() error {
+	hz, err := c.GetFreqB()
+	if err != nil {
+		return err
+	}
+	return c.SetFreqA(hz)
+}
+
+// GetFreqB queries VFO B frequency from the K4. Returns Hz.
+func (c *CATClient) GetFreqB() (int, error) {
+	if err := c.send("FB;"); err != nil {
+		return 0, err
+	}
+	select {
+	case resp := <-c.respCh:
+		if strings.HasPrefix(resp, "FB") {
+			var hz int
+			fmt.Sscanf(resp[2:], "%d", &hz)
+			return hz, nil
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+	return 0, fmt.Errorf("FB query timeout")
+}
+
+// SetRIT sets RIT on or off.
+func (c *CATClient) SetRIT(on bool) error {
+	cmd := "RT0;"
+	if on {
+		cmd = "RT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// ClearRIT clears the RIT offset to zero.
+func (c *CATClient) ClearRIT() error {
+	log.Printf("CAT: RC;")
+	return c.send("RC;")
+}
+
+// SetXIT sets XIT on or off.
+func (c *CATClient) SetXIT(on bool) error {
+	cmd := "XT0;"
+	if on {
+		cmd = "XT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNB sets Noise Blanker on or off.
+func (c *CATClient) SetNB(on bool) error {
+	cmd := "NB0;"
+	if on {
+		cmd = "NB1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNR sets Noise Reduction on or off.
+func (c *CATClient) SetNR(on bool) error {
+	cmd := "NR0;"
+	if on {
+		cmd = "NR1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetSplit sets Split mode on or off.
+func (c *CATClient) SetSplit(on bool) error {
+	cmd := "FT0;"
+	if on {
+		cmd = "FT1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetFilterBW sets the IF filter bandwidth in Hz. Uses main receiver.
+// K4 format: BWnnnn; where nnnn is bandwidth in 10 Hz units.
+func (c *CATClient) SetFilterBW(hz int) error {
+	if hz < 50 {
+		hz = 50
+	}
+	if hz > 4000 {
+		hz = 4000
+	}
+	cmd := fmt.Sprintf("BW%04d;", hz/10)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNotch toggles the manual notch filter on or off. K4 format: NM/; (toggle).
+func (c *CATClient) SetNotch(on bool) error {
+	cmd := "NM0;"
+	if on {
+		cmd = "NM1;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SetNotchFreq sets the manual notch frequency (150-5000 Hz) and enables it.
+// K4 format: NMnnnn1; where nnnn is the notch pitch in Hz.
+func (c *CATClient) SetNotchFreq(hz int) error {
+	if hz < 150 {
+		hz = 150
+	}
+	if hz > 5000 {
+		hz = 5000
+	}
+	cmd := fmt.Sprintf("NM%04d1;", hz)
+	log.Printf("CAT: %s", cmd)
+	return c.send(cmd)
+}
+
+// SendCWMessage sends a CW text message via the KY command.
+func (c *CATClient) SendCWMessage(text string) error {
+	// Send in chunks of up to 24 chars
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > 24 {
+			chunk = chunk[:24]
+		}
+		text = text[len(chunk):]
+		if err := c.SendKY(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }

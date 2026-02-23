@@ -9,7 +9,7 @@ import (
 )
 
 // CATServer accepts TCP connections and relays CAT commands to/from a CATClient.
-// This allows N1MM, a remote wk4, or multiple clients to connect to a radio
+// This allows N1MM, a remote BarnCat Sparks instance, or multiple clients to connect to a radio
 // over the network. Supports multiple simultaneous clients — commands from any
 // client go to the radio, responses are broadcast to all clients.
 type CATServer struct {

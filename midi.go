@@ -122,6 +122,30 @@ func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 	}
 }
 
+// optFloat returns a float64 option from a mapping's opts map, or the fallback.
+func optFloat(opts map[string]interface{}, key string, fallback float64) float64 {
+	if opts == nil {
+		return fallback
+	}
+	v, ok := opts[key]
+	if !ok {
+		return fallback
+	}
+	f, ok := v.(float64)
+	if !ok {
+		return fallback
+	}
+	return f
+}
+
+// ccValue scales a MIDI CC value (0-127) to an output range, with optional invert.
+func ccValue(value, maxOut int, opts map[string]interface{}) int {
+	if optFloat(opts, "invert", 0) != 0 {
+		value = 127 - value
+	}
+	return value * maxOut / 127
+}
+
 // dispatch executes the action for a MIDI event.
 func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 	switch m.Action {
@@ -146,45 +170,149 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 	case "vfo_swap":
 		go d.cat.SwapVFO()
 
+	case "vfo_a_to_b":
+		go d.cat.VFOAtoB()
+
+	case "vfo_b_to_a":
+		go d.cat.VFOBtoA()
+
 	case "volume":
-		level := value * 255 / 127
-		go d.cat.SetVolume(level)
+		level := ccValue(value, 60, m.Opts)
+		go d.cat.SetVolume(0, level)
+
+	case "volume_b":
+		level := ccValue(value, 60, m.Opts)
+		go d.cat.SetVolume(1, level)
+
+	case "rf_gain":
+		level := ccValue(value, 60, m.Opts)
+		go d.cat.SetRFGain(0, level)
+
+	case "rf_gain_b":
+		level := ccValue(value, 60, m.Opts)
+		go d.cat.SetRFGain(1, level)
+
+	case "power":
+		v := value
+		if optFloat(m.Opts, "invert", 0) != 0 {
+			v = 127 - v
+		}
+		// CC 0-100: 0.1W to 10.0W (0.1W per step, QRP range)
+		// CC 101-127: ~11W to 110W (~3.7W per step, QRO range)
+		if v <= 100 {
+			tenths := v + 1 // 1-101 → 0.1W-10.1W, clamped to 100 max
+			if tenths > 100 {
+				tenths = 100
+			}
+			go d.cat.SetPower(tenths)
+		} else {
+			watts := 11 + (v-101)*99/26 // 11W-110W
+			go d.cat.SetPower(watts * 10)
+		}
 
 	case "speed":
 		wpm := 5 + value*94/127
 		go d.cat.SetSpeed(wpm)
 
+	case "rit":
+		d.ritOn = !d.ritOn
+		go d.cat.SetRIT(d.ritOn)
+
+	case "xit":
+		d.xitOn = !d.xitOn
+		go d.cat.SetXIT(d.xitOn)
+
+	case "rit_clear":
+		d.ritOn = false
+		go d.cat.ClearRIT()
+
+	case "nb":
+		d.nbOn = !d.nbOn
+		go d.cat.SetNB(d.nbOn)
+
+	case "nr":
+		d.nrOn = !d.nrOn
+		go d.cat.SetNR(d.nrOn)
+
+	case "split":
+		d.splitOn = !d.splitOn
+		go d.cat.SetSplit(d.splitOn)
+
 	case "vfo_tune":
-		step := 10
+		step := int(optFloat(m.Opts, "step", 10))
+		d.tuneVFO(value, step)
+
+	case "vfo_b_tune":
+		step := int(optFloat(m.Opts, "step", 10))
+		d.tuneVFOB(value, step)
+
+	case "filter_bw":
+		minHz := int(optFloat(m.Opts, "min", 50))
+		maxHz := int(optFloat(m.Opts, "max", 3000))
+		bw := minHz + value*(maxHz-minHz)/127
+		go d.cat.SetFilterBW(bw)
+
+	case "filter_adjust":
+		step := int(optFloat(m.Opts, "step", 50))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustFilter(delta)
+		}
+
+	case "filter_up":
+		step := int(optFloat(m.Opts, "step", 50))
+		d.adjustFilter(step)
+
+	case "filter_down":
+		step := int(optFloat(m.Opts, "step", 50))
+		d.adjustFilter(-step)
+
+	case "notch":
+		d.notchOn = !d.notchOn
+		go d.cat.SetNotch(d.notchOn)
+
+	case "notch_freq":
+		minHz := int(optFloat(m.Opts, "min", 150))
+		maxHz := int(optFloat(m.Opts, "max", 3000))
+		hz := minHz + value*(maxHz-minHz)/127
+		d.notchOn = true
+		d.notchHz = hz
+		go d.cat.SetNotchFreq(hz)
+
+	case "cw_msg":
 		if m.Opts != nil {
-			if s, ok := m.Opts["step"]; ok {
-				if sf, ok := s.(float64); ok {
-					step = int(sf)
+			if text, ok := m.Opts["text"]; ok {
+				if s, ok := text.(string); ok && s != "" {
+					go d.cat.SendCWMessage(s)
 				}
 			}
 		}
-		d.tuneVFO(value, step)
 
 	default:
 		log.Printf("MIDI: unknown action %q", m.Action)
 	}
 }
 
+// relativeCC decodes a 2's complement relative CC value.
+// 1-63 = positive (CW), 65-127 = negative (CCW), 0/64 = no movement.
+func relativeCC(value, step int) int {
+	if value >= 1 && value <= 63 {
+		return value * step
+	} else if value >= 65 && value <= 127 {
+		return (value - 128) * step
+	}
+	return 0
+}
+
 // tuneVFO adjusts VFO A frequency relative to current.
-// Uses 2's complement relative CC encoding: 1-63 = positive (CW), 65-127 = negative (CCW).
 // Caches frequency locally and throttles CAT commands to avoid flooding the radio.
 // Re-queries the radio if the cache is stale (>2s idle) so band changes and
 // external tuning are picked up automatically.
 // Must be called from the event loop goroutine (not concurrently).
 func (d *MIDIDriver) tuneVFO(value, step int) {
-	// 2's complement relative encoding
-	var delta int
-	if value >= 1 && value <= 63 {
-		delta = value * step
-	} else if value >= 65 && value <= 127 {
-		delta = (value - 128) * step
-	} else {
-		return // 0 or 64 = no movement
+	delta := relativeCC(value, step)
+	if delta == 0 {
+		return
 	}
 
 	now := time.Now()
@@ -211,4 +339,52 @@ func (d *MIDIDriver) tuneVFO(value, step int) {
 	}
 	d.lastTuneAt = now
 	d.cat.SetFreqA(d.vfoFreq)
+}
+
+// tuneVFOB adjusts VFO B frequency relative to current.
+// Same caching/throttling as tuneVFO but for VFO B.
+func (d *MIDIDriver) tuneVFOB(value, step int) {
+	delta := relativeCC(value, step)
+	if delta == 0 {
+		return
+	}
+
+	now := time.Now()
+
+	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 2*time.Second {
+		hz, err := d.cat.GetFreqB()
+		if err != nil {
+			log.Printf("MIDI: GetFreqB failed: %v", err)
+			return
+		}
+		d.vfoBFreq = hz
+		d.vfoBKnown = true
+	}
+
+	d.vfoBFreq += delta
+	if d.vfoBFreq < 0 {
+		d.vfoBFreq = 0
+	}
+
+	if now.Sub(d.lastTuneBAt) < 50*time.Millisecond {
+		return
+	}
+	d.lastTuneBAt = now
+	d.cat.SetFreqB(d.vfoBFreq)
+}
+
+// adjustFilter changes the filter bandwidth by deltaHz.
+// Tracks current BW locally (defaults to 500 Hz if unknown).
+func (d *MIDIDriver) adjustFilter(deltaHz int) {
+	if d.filterBW == 0 {
+		d.filterBW = 500 // sensible CW default
+	}
+	d.filterBW += deltaHz
+	if d.filterBW < 50 {
+		d.filterBW = 50
+	}
+	if d.filterBW > 4000 {
+		d.filterBW = 4000
+	}
+	go d.cat.SetFilterBW(d.filterBW)
 }

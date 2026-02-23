@@ -22,6 +22,7 @@ type WebUI struct {
 	mu        sync.Mutex
 	config    *AppConfig
 	cfgPath   string
+	version   string
 	running   bool
 	statusMsg string
 	cat       *CATClient
@@ -32,15 +33,19 @@ type WebUI struct {
 }
 
 // RunWebUI starts the web UI on a free localhost port and opens the browser.
-func RunWebUI(configPath string) {
+func RunWebUI(configPath, version string) {
 	cfg, err := LoadAppConfig(configPath)
 	if err != nil {
 		cfg = DefaultAppConfig()
 	}
 
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", version)
+
 	w := &WebUI{
 		config:    cfg,
 		cfgPath:   configPath,
+		version:   version,
 		statusMsg: "Stopped",
 	}
 
@@ -53,6 +58,8 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/serial-ports", w.handleSerialPorts)
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
+	mux.HandleFunc("/api/trace", w.handleTrace)
+	mux.HandleFunc("/api/version", w.handleVersion)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -60,15 +67,25 @@ func RunWebUI(configPath string) {
 		log.Fatalf("webui: failed to listen: %v", err)
 	}
 	addr := listener.Addr().String()
+	url := "http://" + addr
 
 	w.server = &http.Server{Handler: mux}
 
-	log.Printf("webui: listening on http://%s", addr)
-	go openBrowser("http://" + addr)
+	log.Printf("webui: listening on %s", url)
 
-	if err := w.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("webui: server error: %v", err)
-	}
+	// Start HTTP server in a goroutine
+	serverDone := make(chan struct{})
+	go func() {
+		if err := w.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("webui: server error: %v", err)
+		}
+		close(serverDone)
+	}()
+
+	waitForGUI(url, "BarnCat Sparks "+version, 760, 900) // blocks until exit
+
+	w.Shutdown()
+	<-serverDone
 }
 
 func openBrowser(url string) {
@@ -205,6 +222,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 		w.cat.SetSpeed(w.config.KeyerSpeed)
 		go w.wk.Run()
+		if w.config.ProtocolTrace {
+			w.wk.SetTrace(true)
+		}
 	}
 
 	// Start MIDI if device selected
@@ -332,6 +352,36 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 		actions[i] = a
 	}
 	writeJSON(rw, actions)
+}
+
+func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.running || w.wk == nil {
+		http.Error(rw, "not running", http.StatusBadRequest)
+		return
+	}
+
+	w.wk.SetTrace(req.Enabled)
+	writeJSON(rw, map[string]bool{"enabled": req.Enabled})
+}
+
+func (w *WebUI) handleVersion(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, map[string]string{"version": w.version})
 }
 
 func writeJSON(rw http.ResponseWriter, v interface{}) {
