@@ -1,4 +1,4 @@
-package main
+package webui
 
 import (
 	"context"
@@ -10,8 +10,14 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/ujay/barncat-sparks/internal/cat"
+	"github.com/ujay/barncat-sparks/internal/config"
+	"github.com/ujay/barncat-sparks/internal/keyer"
+	"github.com/ujay/barncat-sparks/internal/midi"
 )
 
 //go:embed webui.html
@@ -20,26 +26,32 @@ var webuiHTML embed.FS
 // WebUI holds the HTTP server and runtime state.
 type WebUI struct {
 	mu        sync.Mutex
-	config    *AppConfig
+	config    *config.AppConfig
 	cfgPath   string
 	running   bool
 	statusMsg string
-	cat       *CATClient
-	wk        *Winkeyer
-	midi      *MIDIDriver
-	catServer *CATServer
+	cat       *cat.CATClient
+	wk        *keyer.Winkeyer
+	midiDrv   *midi.MIDIDriver
+	catServer *cat.CATServer
 	server    *http.Server
+
+	// Decode panel state (guarded by decodeMu, separate from main mu)
+	decodeMu      sync.Mutex
+	decodeBuf     strings.Builder
+	decodeEnabled bool
+	decodeCancel  context.CancelFunc
 }
 
 // RunWebUI starts the web UI on a free localhost port and opens the browser.
 func RunWebUI(configPath string) {
-	cfg, err := LoadAppConfig(configPath)
+	cfg, err := config.LoadAppConfig(configPath)
 	if err != nil {
-		cfg = DefaultAppConfig()
+		cfg = config.DefaultAppConfig()
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", Version)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", config.Version)
 
 	w := &WebUI{
 		config:    cfg,
@@ -57,6 +69,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
 	mux.HandleFunc("/api/trace", w.handleTrace)
+	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
 	mux.HandleFunc("/api/about", w.handleAbout)
 
@@ -81,7 +94,7 @@ func RunWebUI(configPath string) {
 		close(serverDone)
 	}()
 
-	waitForGUI(url, "BarnCat Sparks "+Version, 760, 900) // blocks until exit
+	waitForGUI(url, "BarnCat Sparks "+config.Version, 760, 900) // blocks until exit
 
 	w.Shutdown()
 	<-serverDone
@@ -122,7 +135,7 @@ func (w *WebUI) handleConfig(rw http.ResponseWriter, r *http.Request) {
 		w.mu.Unlock()
 		writeJSON(rw, cfg)
 	case http.MethodPost:
-		var cfg AppConfig
+		var cfg config.AppConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
@@ -130,7 +143,7 @@ func (w *WebUI) handleConfig(rw http.ResponseWriter, r *http.Request) {
 		w.mu.Lock()
 		w.config = &cfg
 		w.mu.Unlock()
-		if err := SaveAppConfig(w.cfgPath, &cfg); err != nil {
+		if err := config.SaveAppConfig(w.cfgPath, &cfg); err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -142,14 +155,22 @@ func (w *WebUI) handleConfig(rw http.ResponseWriter, r *http.Request) {
 
 // statusResponse is the JSON shape for /api/status.
 type statusResponse struct {
-	Running bool   `json:"running"`
-	Message string `json:"message"`
+	Running      bool   `json:"running"`
+	Message      string `json:"message"`
+	RTTYMode     bool   `json:"rtty_mode"`
+	DecodeActive bool   `json:"decode_active"`
 }
 
 func (w *WebUI) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
 	resp := statusResponse{Running: w.running, Message: w.statusMsg}
+	if w.wk != nil {
+		resp.RTTYMode = w.wk.IsRTTY()
+	}
 	w.mu.Unlock()
+	w.decodeMu.Lock()
+	resp.DecodeActive = w.decodeEnabled
+	w.decodeMu.Unlock()
 	writeJSON(rw, resp)
 }
 
@@ -168,14 +189,14 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save config before starting
-	if err := SaveAppConfig(w.cfgPath, w.config); err != nil {
+	if err := config.SaveAppConfig(w.cfgPath, w.config); err != nil {
 		w.statusMsg = fmt.Sprintf("Save failed: %v", err)
 		writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 		return
 	}
 
 	// Connect CAT (TCP or serial)
-	w.cat = NewCATClient()
+	w.cat = cat.NewCATClient()
 	switch w.config.CATTransport {
 	case "serial":
 		w.statusMsg = "Connecting to radio via serial..."
@@ -197,7 +218,7 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 
 	// Start CATServer if listen address configured
 	if w.config.CATListen != "" {
-		srv, err := NewCATServer(w.cat, w.config.CATListen)
+		srv, err := cat.NewCATServer(w.cat, w.config.CATListen)
 		if err != nil {
 			w.statusMsg = fmt.Sprintf("CATServer error: %v", err)
 			// Non-fatal — continue without server
@@ -209,8 +230,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 
 	// Start WinKeyer if serial port selected
 	if w.config.SerialPort != "" {
-		w.wk = NewWinkeyer(w.cat)
-		w.wk.wpm = w.config.KeyerSpeed
+		w.wk = keyer.NewWinkeyer(w.cat)
+		w.wk.SetWPM(w.config.KeyerSpeed)
 		if err := w.wk.OpenSerial(w.config.SerialPort); err != nil {
 			w.statusMsg = fmt.Sprintf("Serial error: %v", err)
 			w.cat.Close()
@@ -229,9 +250,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	// Start MIDI if device selected
 	if w.config.MIDIDevice != "" {
 		midiCfg := w.config.ToMIDIConfig()
-		w.midi = NewMIDIDriver(w.cat, midiCfg)
+		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
 		go func() {
-			if err := w.midi.Run(); err != nil {
+			if err := w.midiDrv.Run(); err != nil {
 				w.mu.Lock()
 				w.statusMsg = fmt.Sprintf("MIDI: %v", err)
 				w.mu.Unlock()
@@ -276,9 +297,23 @@ func (w *WebUI) handleStop(rw http.ResponseWriter, r *http.Request) {
 
 // stopLocked shuts down all subsystems. Must be called with w.mu held.
 func (w *WebUI) stopLocked() {
-	if w.midi != nil {
-		w.midi.Close()
-		w.midi = nil
+	// Stop decode goroutine and disable radio's text decoder
+	w.decodeMu.Lock()
+	wasDecoding := w.decodeEnabled
+	if w.decodeCancel != nil {
+		w.decodeCancel()
+		w.decodeCancel = nil
+	}
+	w.decodeEnabled = false
+	w.decodeBuf.Reset()
+	w.decodeMu.Unlock()
+	if wasDecoding && w.cat != nil {
+		w.cat.SetTextDecode(false)
+	}
+
+	if w.midiDrv != nil {
+		w.midiDrv.Close()
+		w.midiDrv = nil
 	}
 	if w.wk != nil {
 		w.wk.Close()
@@ -307,7 +342,7 @@ func (w *WebUI) Shutdown() {
 }
 
 func (w *WebUI) handleSerialPorts(rw http.ResponseWriter, r *http.Request) {
-	ports := listSerialPorts()
+	ports := config.ListSerialPorts()
 	if ports == nil {
 		ports = []string{}
 	}
@@ -315,7 +350,7 @@ func (w *WebUI) handleSerialPorts(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebUI) handleMIDIDevices(rw http.ResponseWriter, r *http.Request) {
-	devices := enumerateMIDIDevices()
+	devices := midi.EnumerateMIDIDevices()
 	if devices == nil {
 		devices = []string{}
 	}
@@ -324,8 +359,8 @@ func (w *WebUI) handleMIDIDevices(rw http.ResponseWriter, r *http.Request) {
 
 // actionInfo is the JSON shape for a single action in /api/actions.
 type actionInfo struct {
-	Name    string      `json:"name"`
-	Label   string      `json:"label"`
+	Name    string       `json:"name"`
+	Label   string       `json:"label"`
 	Options []optionInfo `json:"options,omitempty"`
 }
 
@@ -336,10 +371,10 @@ type optionInfo struct {
 }
 
 func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
-	names := ActionNames()
+	names := config.ActionNames()
 	actions := make([]actionInfo, len(names))
 	for i, name := range names {
-		def := ActionRegistry[name]
+		def := config.ActionRegistry[name]
 		a := actionInfo{Name: name, Label: def.Label}
 		for _, opt := range def.Options {
 			a.Options = append(a.Options, optionInfo{
@@ -380,11 +415,87 @@ func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebUI) handleVersion(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, map[string]string{"version": Version})
+	writeJSON(rw, map[string]string{"version": config.Version})
 }
 
 func (w *WebUI) handleAbout(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, GetAboutInfo())
+	writeJSON(rw, config.GetAboutInfo())
+}
+
+// handleDecode handles GET (poll decoded text) and POST (enable/disable) for the decode panel.
+func (w *WebUI) handleDecode(rw http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		w.decodeMu.Lock()
+		text := w.decodeBuf.String()
+		w.decodeBuf.Reset()
+		enabled := w.decodeEnabled
+		w.decodeMu.Unlock()
+		writeJSON(rw, map[string]interface{}{"enabled": enabled, "text": text})
+
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.mu.Lock()
+		running := w.running
+		c := w.cat
+		w.mu.Unlock()
+
+		if !running || c == nil {
+			http.Error(rw, "not running", http.StatusBadRequest)
+			return
+		}
+
+		w.decodeMu.Lock()
+		if req.Enabled && !w.decodeEnabled {
+			c.SetTextDecode(true)
+			ctx, cancel := context.WithCancel(context.Background())
+			w.decodeCancel = cancel
+			w.decodeEnabled = true
+			go w.decodeLoop(ctx, c)
+		} else if !req.Enabled && w.decodeEnabled {
+			if w.decodeCancel != nil {
+				w.decodeCancel()
+				w.decodeCancel = nil
+			}
+			w.decodeEnabled = false
+			c.SetTextDecode(false)
+		}
+		w.decodeMu.Unlock()
+		writeJSON(rw, map[string]bool{"enabled": req.Enabled})
+
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// decodeLoop polls the K4 text decoder every 250ms and accumulates text.
+func (w *WebUI) decodeLoop(ctx context.Context, c *cat.CATClient) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			text, err := c.QueryDecode()
+			if err != nil {
+				log.Printf("decode: %v", err)
+				continue
+			}
+			if text != "" {
+				w.decodeMu.Lock()
+				w.decodeBuf.WriteString(text)
+				w.decodeMu.Unlock()
+			}
+		}
+	}
 }
 
 func writeJSON(rw http.ResponseWriter, v interface{}) {

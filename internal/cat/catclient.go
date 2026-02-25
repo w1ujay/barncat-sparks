@@ -1,4 +1,4 @@
-package main
+package cat
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type CATClient struct {
 	mu        sync.Mutex
 	transport io.ReadWriteCloser
 	respCh    chan string
+	decodeCh  chan string // dedicated channel for TT (text decode) responses
 
 	// Response relays — all responses are broadcast to every writer in this list
 	// (used by CATServer to forward responses to multiple TCP clients).
@@ -29,7 +31,8 @@ type CATClient struct {
 // NewCATClient creates a new CATClient. Call ConnectTCP or ConnectSerial to connect.
 func NewCATClient() *CATClient {
 	return &CATClient{
-		respCh: make(chan string, 8),
+		respCh:   make(chan string, 8),
+		decodeCh: make(chan string, 8),
 	}
 }
 
@@ -105,7 +108,7 @@ func (c *CATClient) readLoop() {
 	}
 
 	scanner := bufio.NewScanner(t)
-	scanner.Split(splitSemicolon)
+	scanner.Split(SplitSemicolon)
 	for scanner.Scan() {
 		resp := scanner.Text()
 		if resp == "" {
@@ -118,6 +121,15 @@ func (c *CATClient) readLoop() {
 		}
 		c.relayMu.Unlock()
 
+		// Route TT (text decode) responses to dedicated channel
+		if strings.HasPrefix(resp, "TT") {
+			select {
+			case c.decodeCh <- resp:
+			default:
+			}
+			continue
+		}
+
 		select {
 		case c.respCh <- resp:
 		default:
@@ -126,8 +138,8 @@ func (c *CATClient) readLoop() {
 	}
 }
 
-// splitSemicolon is a bufio.SplitFunc that splits on semicolons.
-func splitSemicolon(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// SplitSemicolon is a bufio.SplitFunc that splits on semicolons.
+func SplitSemicolon(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	for i := 0; i < len(data); i++ {
 		if data[i] == ';' {
 			return i + 1, data[:i], nil
@@ -139,7 +151,7 @@ func splitSemicolon(data []byte, atEOF bool) (advance int, token []byte, err err
 	return 0, nil, nil
 }
 
-func (c *CATClient) send(cmd string) error {
+func (c *CATClient) Send(cmd string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.transport == nil {
@@ -160,20 +172,20 @@ func (c *CATClient) SendKY(text string) error {
 	}
 	cmd := fmt.Sprintf("KY %s;", text)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SendAbort stops CW keying by switching the K4 to receive.
 func (c *CATClient) SendAbort() error {
 	log.Printf("CAT: RX; (abort)")
-	return c.send("RX;")
+	return c.Send("RX;")
 }
 
 // SetSpeed sets the K4 keyer speed in WPM.
 func (c *CATClient) SetSpeed(wpm int) error {
 	cmd := fmt.Sprintf("KS%03d;", wpm)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetPTT controls transmit state.
@@ -183,12 +195,12 @@ func (c *CATClient) SetPTT(on bool) error {
 		cmd = "TX;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // QuerySpeed queries the current keyer speed from the K4.
 func (c *CATClient) QuerySpeed() (int, error) {
-	if err := c.send("KS;"); err != nil {
+	if err := c.Send("KS;"); err != nil {
 		return 0, err
 	}
 	// Wait for response with timeout
@@ -208,19 +220,19 @@ func (c *CATClient) QuerySpeed() (int, error) {
 func (c *CATClient) SetFreqA(hz int) error {
 	cmd := fmt.Sprintf("FA%011d;", hz)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetFreqB sets VFO B frequency in Hz.
 func (c *CATClient) SetFreqB(hz int) error {
 	cmd := fmt.Sprintf("FB%011d;", hz)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // GetFreqA queries VFO A frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqA() (int, error) {
-	if err := c.send("FA;"); err != nil {
+	if err := c.Send("FA;"); err != nil {
 		return 0, err
 	}
 	select {
@@ -251,7 +263,7 @@ func (c *CATClient) SetVolume(recv, level int) error {
 		cmd = fmt.Sprintf("AG%03d;", level)
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetRFGain sets the K4 RF gain attenuation (0-60 dB) for a receiver.
@@ -271,7 +283,7 @@ func (c *CATClient) SetRFGain(recv, level int) error {
 		cmd = fmt.Sprintf("RG-%02d;", level)
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetPower sets the K4 transmit power using L (QRP) or H (QRO) range.
@@ -293,32 +305,32 @@ func (c *CATClient) SetPower(tenths int) error {
 		cmd = fmt.Sprintf("PC%03dH;", watts)
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // BandUp moves to the next band.
 func (c *CATClient) BandUp() error {
 	log.Printf("CAT: BU;")
-	return c.send("BU;")
+	return c.Send("BU;")
 }
 
 // BandDown moves to the previous band.
 func (c *CATClient) BandDown() error {
 	log.Printf("CAT: BD;")
-	return c.send("BD;")
+	return c.Send("BD;")
 }
 
 // SelectVFO selects VFO A (0) or VFO B (1).
 func (c *CATClient) SelectVFO(ab int) error {
 	cmd := fmt.Sprintf("FT%d;", ab&1)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SwapVFO swaps VFO A and B.
 func (c *CATClient) SwapVFO() error {
 	log.Printf("CAT: SWT11;")
-	return c.send("SWT11;")
+	return c.Send("SWT11;")
 }
 
 // VFOAtoB copies VFO A frequency to VFO B.
@@ -341,7 +353,7 @@ func (c *CATClient) VFOBtoA() error {
 
 // GetFreqB queries VFO B frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqB() (int, error) {
-	if err := c.send("FB;"); err != nil {
+	if err := c.Send("FB;"); err != nil {
 		return 0, err
 	}
 	select {
@@ -363,13 +375,13 @@ func (c *CATClient) SetRIT(on bool) error {
 		cmd = "RT1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // ClearRIT clears the RIT offset to zero.
 func (c *CATClient) ClearRIT() error {
 	log.Printf("CAT: RC;")
-	return c.send("RC;")
+	return c.Send("RC;")
 }
 
 // SetXIT sets XIT on or off.
@@ -379,7 +391,7 @@ func (c *CATClient) SetXIT(on bool) error {
 		cmd = "XT1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetNB sets Noise Blanker on or off.
@@ -389,7 +401,7 @@ func (c *CATClient) SetNB(on bool) error {
 		cmd = "NB1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetNR sets Noise Reduction on or off.
@@ -399,7 +411,7 @@ func (c *CATClient) SetNR(on bool) error {
 		cmd = "NR1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetSplit sets Split mode on or off.
@@ -409,7 +421,7 @@ func (c *CATClient) SetSplit(on bool) error {
 		cmd = "FT1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetFilterBW sets the IF filter bandwidth in Hz. Uses main receiver.
@@ -423,7 +435,7 @@ func (c *CATClient) SetFilterBW(hz int) error {
 	}
 	cmd := fmt.Sprintf("BW%04d;", hz/10)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetNotch toggles the manual notch filter on or off. K4 format: NM/; (toggle).
@@ -433,7 +445,7 @@ func (c *CATClient) SetNotch(on bool) error {
 		cmd = "NM1;"
 	}
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SetNotchFreq sets the manual notch frequency (150-5000 Hz) and enables it.
@@ -447,7 +459,7 @@ func (c *CATClient) SetNotchFreq(hz int) error {
 	}
 	cmd := fmt.Sprintf("NM%04d1;", hz)
 	log.Printf("CAT: %s", cmd)
-	return c.send(cmd)
+	return c.Send(cmd)
 }
 
 // SendCWMessage sends a CW text message via the KY command.
@@ -464,4 +476,110 @@ func (c *CATClient) SendCWMessage(text string) error {
 		}
 	}
 	return nil
+}
+
+// SetDataMode switches the K4 to DATA mode with FSK-D sub-mode for RTTY.
+func (c *CATClient) SetDataMode() error {
+	log.Printf("CAT: MD6;DT2; (DATA/FSK-D)")
+	if err := c.Send("MD6;"); err != nil {
+		return err
+	}
+	return c.Send("DT2;")
+}
+
+// SetCWMode switches the K4 back to CW mode.
+func (c *CATClient) SetCWMode() error {
+	log.Printf("CAT: MD3; (CW)")
+	return c.Send("MD3;")
+}
+
+// SendRTTYText sends RTTY text via KY commands in 24-char chunks.
+// In FSK-D mode the K4 encodes the ASCII text as Baudot.
+func (c *CATClient) SendRTTYText(text string) error {
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > 24 {
+			chunk = chunk[:24]
+		}
+		text = text[len(chunk):]
+		cmd := fmt.Sprintf("KY %s;", chunk)
+		log.Printf("CAT: %s", cmd)
+		if err := c.Send(cmd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SendRTTYEOT sends the end-of-transmission marker for RTTY.
+// The K4 interprets "KY |;" as a signal to finish the current transmission.
+func (c *CATClient) SendRTTYEOT() error {
+	log.Printf("CAT: KY |; (RTTY EOT)")
+	return c.Send("KY |;")
+}
+
+// QueryMode queries the current operating mode from the radio.
+// Returns the mode number: 1=LSB, 2=USB, 3=CW, 4=FM, 5=AM, 6=DATA, 7=CW-REV, 9=DATA-REV.
+func (c *CATClient) QueryMode() (int, error) {
+	if err := c.Send("MD;"); err != nil {
+		return 0, err
+	}
+	select {
+	case resp := <-c.respCh:
+		if strings.HasPrefix(resp, "MD") {
+			var mode int
+			fmt.Sscanf(resp[2:], "%d", &mode)
+			return mode, nil
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+	return 0, fmt.Errorf("MD query timeout")
+}
+
+// SetTextDecode enables or disables the K4's built-in text decoder.
+// Uses TD$ command: TD$mtl; where m=mode, t=threshold, l=lines.
+// Queries the radio's current operating mode to send the correct parameters:
+//
+//	CW/CW-REV (3,7): m=2 (RX 8-45 WPM), t=0 (auto), l=5
+//	DATA/DATA-REV (6,9): m=1 (on), t=0, l=5
+func (c *CATClient) SetTextDecode(on bool) error {
+	if !on {
+		log.Printf("CAT: TD$000; (text decode OFF)")
+		return c.Send("TD$000;")
+	}
+	mode, err := c.QueryMode()
+	if err != nil {
+		log.Printf("CAT: mode query failed, defaulting to CW decode: %v", err)
+		mode = 3
+	}
+	switch mode {
+	case 6, 9: // DATA, DATA-REV
+		log.Printf("CAT: TD$105; (DATA text decode ON, 5 lines)")
+		return c.Send("TD$105;")
+	default: // CW, CW-REV, etc.
+		log.Printf("CAT: TD$205; (CW text decode ON, auto threshold, 5 lines)")
+		return c.Send("TD$205;")
+	}
+}
+
+// QueryDecode polls the K4 text decoder. The K4 returns TTnntext where nn is
+// the character count. Returns the decoded text, or ("", nil) on timeout
+// (normal when no new text is available).
+func (c *CATClient) QueryDecode() (string, error) {
+	if err := c.Send("TT;"); err != nil {
+		return "", err
+	}
+	select {
+	case resp := <-c.decodeCh:
+		if len(resp) < 4 {
+			return "", nil
+		}
+		n, err := strconv.Atoi(resp[2:4])
+		if err != nil || n == 0 {
+			return "", nil
+		}
+		return resp[4:], nil
+	case <-time.After(500 * time.Millisecond):
+		return "", nil
+	}
 }

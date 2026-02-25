@@ -22,9 +22,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/ujay/barncat-sparks/internal/cat"
+	"github.com/ujay/barncat-sparks/internal/config"
+	"github.com/ujay/barncat-sparks/internal/keyer"
+	"github.com/ujay/barncat-sparks/internal/midi"
+	"github.com/ujay/barncat-sparks/internal/webui"
 )
 
-// Version is defined in about.go
+// Version is defined in internal/config/about.go
 
 const defaultConfigFile = "sparks-config.json"
 
@@ -45,13 +51,13 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("sparks %s\n", Version)
+		fmt.Printf("sparks %s\n", config.Version)
 		return
 	}
 
 	// Handle -midi-list
 	if *midiList {
-		if err := ListMIDIDevices(); err != nil {
+		if err := midi.ListMIDIDevices(); err != nil {
 			log.Fatalf("MIDI: %v", err)
 		}
 		return
@@ -76,15 +82,15 @@ func main() {
 	}
 
 	// Otherwise, launch web UI
-	RunWebUI(cfgPath)
+	webui.RunWebUI(cfgPath)
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
 	catTransport, catSerialPort string, catBaud int, catListen string) {
 	// Load config for defaults if CLI flags are sparse
-	cfg, _ := LoadAppConfig(cfgPath)
+	cfg, _ := config.LoadAppConfig(cfgPath)
 	if cfg == nil {
-		cfg = DefaultAppConfig()
+		cfg = config.DefaultAppConfig()
 	}
 
 	// CLI flags override config
@@ -146,29 +152,29 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", Version)
+	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", config.Version)
 
-	cat := NewCATClient()
+	c := cat.NewCATClient()
 	switch catTransport {
 	case "serial":
 		if catSerialPort == "" {
 			log.Fatal("serial transport requires -cat-serial")
 		}
 		log.Printf("  CAT: %s (serial, %d baud)", catSerialPort, catBaud)
-		if err := cat.ConnectSerial(catSerialPort, catBaud); err != nil {
+		if err := c.ConnectSerial(catSerialPort, catBaud); err != nil {
 			log.Fatalf("Failed to connect to radio: %v", err)
 		}
 	default:
 		log.Printf("  CAT: %s (TCP)", catAddr)
-		if err := cat.ConnectTCP(catAddr); err != nil {
+		if err := c.ConnectTCP(catAddr); err != nil {
 			log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
 		}
 	}
-	defer cat.Close()
+	defer c.Close()
 
 	// Start CATServer if listen address configured
 	if catListen != "" {
-		srv, err := NewCATServer(cat, catListen)
+		srv, err := cat.NewCATServer(c, catListen)
 		if err != nil {
 			log.Fatalf("CATServer: %v", err)
 		}
@@ -180,29 +186,29 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if portName != "" {
 		log.Printf("  serial: %s", portName)
 		log.Printf("  speed:  %d WPM", speed)
-		wk := NewWinkeyer(cat)
-		wk.wpm = speed
+		wk := keyer.NewWinkeyer(c)
+		wk.SetWPM(speed)
 		if err := wk.OpenSerial(portName); err != nil {
 			log.Fatalf("Failed to open serial port %s: %v", portName, err)
 		}
 		defer wk.Close()
-		cat.SetSpeed(speed)
+		c.SetSpeed(speed)
 		go wk.Run()
 	}
 
 	if midiDevice != "" {
-		midiCfg, err := LoadMIDIConfig(midiConfigPath)
+		midiCfg, err := midi.LoadMIDIConfig(midiConfigPath)
 		if err != nil {
 			log.Fatalf("Failed to load MIDI config %s: %v", midiConfigPath, err)
 		}
 		midiCfg.Device = midiDevice
-		midi := NewMIDIDriver(cat, midiCfg)
+		midiDrv := midi.NewMIDIDriver(c, midiCfg)
 		go func() {
-			if err := midi.Run(); err != nil {
+			if err := midiDrv.Run(); err != nil {
 				log.Fatalf("MIDI: %v", err)
 			}
 		}()
-		defer midi.Close()
+		defer midiDrv.Close()
 		log.Printf("  MIDI:  %s (config: %s)", midiDevice, midiConfigPath)
 	}
 

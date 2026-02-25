@@ -1,10 +1,11 @@
-package main
+package config
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 
+	"github.com/ujay/barncat-sparks/internal/midi"
 	"go.bug.st/serial"
 )
 
@@ -66,13 +67,13 @@ func SaveAppConfig(path string, cfg *AppConfig) error {
 
 // ToMIDIConfig converts AppConfig mappings to the MIDIConfig format
 // used by the existing MIDI driver.
-func (c *AppConfig) ToMIDIConfig() *MIDIConfig {
-	mc := &MIDIConfig{
+func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
+	mc := &midi.MIDIConfig{
 		Device:   c.MIDIDevice,
-		Mappings: make([]MIDIMapping, len(c.Mappings)),
+		Mappings: make([]midi.MIDIMapping, len(c.Mappings)),
 	}
 	for i, m := range c.Mappings {
-		mc.Mappings[i] = MIDIMapping{
+		mc.Mappings[i] = midi.MIDIMapping{
 			Type:    m.Type,
 			Channel: m.Channel,
 			Number:  m.Number,
@@ -83,8 +84,8 @@ func (c *AppConfig) ToMIDIConfig() *MIDIConfig {
 	return mc
 }
 
-// listSerialPorts returns available serial port names.
-func listSerialPorts() []string {
+// ListSerialPorts returns available serial port names.
+func ListSerialPorts() []string {
 	ports, err := serial.GetPortsList()
 	if err != nil {
 		return nil

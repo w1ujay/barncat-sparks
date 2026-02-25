@@ -1,4 +1,4 @@
-package main
+package midi
 
 import (
 	"encoding/json"
@@ -200,7 +200,7 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		// CC 0-100: 0.1W to 10.0W (0.1W per step, QRP range)
 		// CC 101-127: ~11W to 110W (~3.7W per step, QRO range)
 		if v <= 100 {
-			tenths := v + 1 // 1-101 → 0.1W-10.1W, clamped to 100 max
+			tenths := v + 1 // 1-101 -> 0.1W-10.1W, clamped to 100 max
 			if tenths > 100 {
 				tenths = 100
 			}

@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package midi
 
 import (
 	"fmt"
@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/ujay/barncat-sparks/internal/cat"
 )
 
 var (
@@ -53,7 +55,7 @@ type midiEvent struct {
 type MIDIDriver struct {
 	mu        sync.Mutex
 	closeOnce sync.Once
-	cat       *CATClient
+	cat       *cat.CATClient
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool
@@ -81,9 +83,9 @@ type MIDIDriver struct {
 }
 
 // NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(cat *CATClient, config *MIDIConfig) *MIDIDriver {
+func NewMIDIDriver(c *cat.CATClient, config *MIDIConfig) *MIDIDriver {
 	return &MIDIDriver{
-		cat:    cat,
+		cat:    c,
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),

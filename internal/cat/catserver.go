@@ -1,4 +1,4 @@
-package main
+package cat
 
 import (
 	"bufio"
@@ -77,14 +77,14 @@ func (s *CATServer) handleClient(conn net.Conn) {
 
 	// Read commands from TCP client and forward to radio
 	scanner := bufio.NewScanner(conn)
-	scanner.Split(splitSemicolon)
+	scanner.Split(SplitSemicolon)
 	for scanner.Scan() {
 		cmd := scanner.Text()
 		if cmd == "" {
 			continue
 		}
 		log.Printf("CATServer: relay %s;", cmd)
-		if err := s.cat.send(cmd + ";"); err != nil {
+		if err := s.cat.Send(cmd + ";"); err != nil {
 			log.Printf("CATServer: send error: %v", err)
 			return
 		}

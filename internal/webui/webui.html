@@ -59,6 +59,15 @@ details summary:hover{color:#569cd6}
 
 <h1 id="appTitle">BarnCat Sparks — WinKeyer &amp; MIDI Controller</h1>
 
+<div class="btn-bar">
+  <button id="startBtn" onclick="doStart()">Start</button>
+  <button id="stopBtn" onclick="doStop()" disabled>Stop</button>
+  <div class="spacer"></div>
+  <button onclick="doSave()">Save Settings</button>
+</div>
+
+<div class="status-bar" id="statusBar">Status: Stopped</div>
+
 <h2>Connection</h2>
 <div class="form-row">
   <label>Radio Connection</label>
@@ -119,14 +128,16 @@ details summary:hover{color:#569cd6}
   <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
 </div>
 
-<div class="btn-bar">
-  <button id="startBtn" onclick="doStart()">Start</button>
-  <button id="stopBtn" onclick="doStop()" disabled>Stop</button>
-  <div class="spacer"></div>
-  <button onclick="doSave()">Save Settings</button>
+<!-- Decode section hidden — K4 may not support CW/RTTY decode
+<h2>Decode</h2>
+<div class="decode-panel">
+  <div class="decode-controls">
+    <label><input type="checkbox" id="decodeEnabled" onchange="onDecodeToggle()"> Enable CW/RTTY decode</label>
+    <button class="secondary" onclick="clearDecode()">Clear</button>
+  </div>
+  <div class="decode-text" id="decodeText"></div>
 </div>
-
-<div class="status-bar" id="statusBar">Status: Stopped</div>
+-->
 
 <div class="about" id="aboutSection"></div>
 
@@ -175,9 +186,6 @@ async function init() {
   }
 
   mappings = cfg.mappings || [];
-  if (mappings.length > 0) {
-    document.getElementById('mappingsDetails').open = true;
-  }
   renderMappings();
   applyStatus(status);
 }

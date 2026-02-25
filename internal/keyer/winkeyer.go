@@ -1,11 +1,14 @@
-package main
+package keyer
 
 import (
+	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
 
+	"github.com/ujay/barncat-sparks/internal/cat"
 	"go.bug.st/serial"
 )
 
@@ -37,7 +40,7 @@ const (
 // the Winkeyer binary protocol into K4 CAT commands (KY, KS, etc).
 type Winkeyer struct {
 	port serial.Port
-	cat  *CATClient
+	cat  *cat.CATClient
 
 	mu       sync.Mutex
 	hostOpen bool
@@ -69,17 +72,33 @@ type Winkeyer struct {
 	writeMu sync.Mutex
 	closed  bool
 
+	// RTTY state (FSK mode via admin 0x13)
+	rttyEnabled    bool               // FSK mode active
+	rttyInBracket  bool               // inside [...] text block (TX active)
+	rttyBuf        []byte             // accumulates text for KY chunking
+	rttyDiddle     bool               // send idle diddle (LTRS) between transmissions
+	rttyAutoCRLF   bool               // auto CR/LF at end of transmission
+	rttyBaudRate   int                // 0=45.45, 1=50, 2=75, 3=100 baud
+	rttyDoneCancel context.CancelFunc // cancels the pending ] goroutine (PTT off)
+
 	// Protocol trace (verbose logging)
 	trace bool
 }
 
-func NewWinkeyer(cat *CATClient) *Winkeyer {
+func NewWinkeyer(c *cat.CATClient) *Winkeyer {
 	return &Winkeyer{
-		cat: cat,
+		cat: c,
 		wpm: 25,
 		// Mode register: serial echo ON, iambic B, no autospace
 		modeReg: 0x04, // bit 2 = serial echo
 	}
+}
+
+// SetWPM sets the keyer speed.
+func (w *Winkeyer) SetWPM(wpm int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wpm = wpm
 }
 
 func (w *Winkeyer) OpenSerial(portName string) error {
@@ -188,6 +207,17 @@ func (w *Winkeyer) processIdle(b byte) {
 	}
 
 	if b >= 0x01 && b <= 0x1F {
+		// Inside RTTY brackets, CR/LF are ignored rather than treated as
+		// WinKeyer commands. N1MM sends {ENTER} as 0x0D which would
+		// otherwise be consumed as the Farnsworth command (eating the next
+		// byte as its parameter). Sending literal CR/LF via KY also breaks
+		// command formatting and disrupts chunking/txDelay.
+		if w.rttyInBracket && (b == 0x0D || b == 0x0A) {
+			if w.trace {
+				log.Printf("WK trace: RTTY ignore CR/LF (0x%02x) inside bracket", b)
+			}
+			return
+		}
 		w.cmdByte = b
 		w.params = nil
 		n := paramCount(b)
@@ -203,10 +233,14 @@ func (w *Winkeyer) processIdle(b byte) {
 		return
 	}
 
-	// ASCII character (0x20-0x7E) — buffer for CW sending
+	// ASCII character (0x20-0x7E)
 	if b >= 0x20 && b <= 0x7E {
 		if w.hostOpen {
-			w.bufferChar(b)
+			if w.rttyEnabled || w.rttyInBracket || b == '[' || b == ']' || b == '\\' {
+				w.handleRTTYChar(b)
+			} else {
+				w.bufferChar(b)
+			}
 		}
 		return
 	}
@@ -235,7 +269,24 @@ func (w *Winkeyer) execAdmin() {
 	switch w.adminCode {
 	case 0x01: // Reset
 		w.hostOpen = false
+		wasRTTY := w.rttyEnabled
+		wasInBracket := w.rttyInBracket
+		w.rttyEnabled = false
+		w.rttyInBracket = false
+		w.rttyBuf = nil
+		if w.rttyDoneCancel != nil {
+			w.rttyDoneCancel()
+			w.rttyDoneCancel = nil
+		}
 		w.clearBuffer()
+		if wasRTTY {
+			go func() {
+				w.cat.SetCWMode()
+				if wasInBracket {
+					w.cat.SetPTT(false)
+				}
+			}()
+		}
 		log.Printf("WK: admin reset")
 
 	case 0x02: // Host Open
@@ -246,7 +297,24 @@ func (w *Winkeyer) execAdmin() {
 
 	case 0x03: // Host Close
 		w.hostOpen = false
+		wasRTTY := w.rttyEnabled
+		wasInBracket := w.rttyInBracket
+		w.rttyEnabled = false
+		w.rttyInBracket = false
+		w.rttyBuf = nil
+		if w.rttyDoneCancel != nil {
+			w.rttyDoneCancel()
+			w.rttyDoneCancel = nil
+		}
 		w.clearBuffer()
+		if wasRTTY {
+			go func() {
+				w.cat.SetCWMode()
+				if wasInBracket {
+					w.cat.SetPTT(false)
+				}
+			}()
+		}
 		log.Printf("WK: host close")
 
 	case 0x04: // Echo Test
@@ -283,7 +351,22 @@ func (w *Winkeyer) execAdmin() {
 		log.Printf("WK: set 9600 baud (not supported)")
 
 	case 0x13: // FSK mode
-		log.Printf("WK: FSK mode (ignored)")
+		if len(w.params) >= 2 {
+			p1 := w.params[0]
+			w.rttyEnabled = p1&0x80 != 0
+			w.rttyDiddle = p1&0x40 != 0
+			w.rttyAutoCRLF = p1&0x10 != 0
+			w.rttyBaudRate = int(p1 & 0x03)
+			if w.rttyEnabled {
+				log.Printf("WK: FSK mode ON (diddle=%v autoCRLF=%v baud=%d)", w.rttyDiddle, w.rttyAutoCRLF, w.rttyBaudRate)
+				go w.cat.SetDataMode()
+			} else {
+				log.Printf("WK: FSK mode OFF")
+				w.rttyInBracket = false
+				w.rttyBuf = nil
+				go w.cat.SetCWMode()
+			}
+		}
 
 	case 0x17: // Get FW Minor
 		w.writeByte(0)
@@ -344,9 +427,13 @@ func (w *Winkeyer) execCommand() {
 
 	case 0x0A: // Clear buffer
 		wasBusy := w.busy
+		wasRTTYBracket := w.rttyInBracket
 		w.clearBuffer()
 		log.Printf("WK: clear buffer")
-		if wasBusy {
+		if wasRTTYBracket {
+			w.cat.SendRTTYEOT()
+			w.cat.SetPTT(false)
+		} else if wasBusy {
 			w.cat.SendAbort()
 		}
 
@@ -653,7 +740,155 @@ func (w *Winkeyer) clearBuffer() {
 		close(w.cancel)
 		w.cancel = nil
 	}
+	// Clear RTTY state
+	if w.rttyDoneCancel != nil {
+		w.rttyDoneCancel()
+		w.rttyDoneCancel = nil
+	}
+	if w.rttyInBracket {
+		w.rttyInBracket = false
+		w.rttyBuf = nil
+		// PTT off handled by caller (execCommand 0x0A or execAdmin reset)
+	}
+	w.rttyBuf = nil
 	w.sendStatusLocked()
+}
+
+// handleRTTYChar processes a character in RTTY/FSK mode.
+// Bracket delimiters control TX state; text inside brackets is sent via KY.
+// Must be called with w.mu held.
+func (w *Winkeyer) handleRTTYChar(b byte) {
+	switch b {
+	case '[': // Begin TX — cancel any pending PTT-off from a previous ], then key up
+		if w.rttyDoneCancel != nil {
+			w.rttyDoneCancel()
+			w.rttyDoneCancel = nil
+		}
+		w.rttyBuf = w.rttyBuf[:0]
+		w.rttyInBracket = true
+		w.cat.SetPTT(true)
+		if w.trace {
+			log.Printf("WK trace: RTTY [ → PTT on")
+		}
+
+	case ']': // End TX — flush text + EOT, delayed PTT off (cancellable by next [)
+		if w.rttyInBracket {
+			text := w.rttyTakeBuf()
+			w.rttyInBracket = false
+			txDelay := w.rttyTxDelay(len(text))
+			if w.trace {
+				log.Printf("WK trace: RTTY ] → flush %q + EOT + PTT off (wait %v)", text, txDelay)
+			}
+			// Send remaining text synchronously for correct wire ordering
+			if text != "" {
+				w.cat.SendRTTYText(text)
+			}
+			// Goroutine: brief coalescing delay → EOT → txDelay → RX
+			// If next [ arrives within 30ms, ctx is cancelled → skip EOT+RX (merge)
+			ctx, cancel := context.WithCancel(context.Background())
+			w.rttyDoneCancel = cancel
+			go func() {
+				select {
+				case <-time.After(30 * time.Millisecond):
+				case <-ctx.Done():
+					return
+				}
+				w.cat.SendRTTYEOT()
+				select {
+				case <-time.After(txDelay):
+					w.cat.SetPTT(false)
+				case <-ctx.Done():
+				}
+			}()
+		}
+
+	case '\\': // Abort
+		w.rttyBuf = w.rttyBuf[:0]
+		if w.rttyInBracket {
+			w.rttyInBracket = false
+			w.cat.SetPTT(false)
+			if w.trace {
+				log.Printf("WK trace: RTTY \\ → abort, PTT off")
+			}
+		}
+
+	case '}': // CR/LF
+		if w.rttyInBracket {
+			w.rttyBuf = append(w.rttyBuf, '\r', '\n')
+			if len(w.rttyBuf) >= 24 {
+				w.rttyFlushLocked()
+			}
+		}
+
+	case '{': // RYRYRY test pattern
+		if w.rttyInBracket {
+			w.rttyBuf = append(w.rttyBuf, []byte("RYRYRYRYRY")...)
+			w.rttyFlushLocked()
+		}
+
+	default:
+		if w.rttyInBracket {
+			w.rttyBuf = append(w.rttyBuf, byte(unicode.ToUpper(rune(b))))
+			if len(w.rttyBuf) >= 24 {
+				w.rttyFlushLocked()
+			}
+		} else {
+			// Outside brackets — pass through to CW buffer
+			w.bufferChar(b)
+		}
+	}
+
+	// Echo the character back if serial echo is enabled
+	if w.modeReg&0x04 != 0 {
+		w.writeByte(b)
+	}
+}
+
+// rttyTakeBuf returns the accumulated RTTY text (uppercased) and clears the buffer.
+// Must be called with w.mu held.
+func (w *Winkeyer) rttyTakeBuf() string {
+	if len(w.rttyBuf) == 0 {
+		return ""
+	}
+	text := strings.ToUpper(string(w.rttyBuf))
+	w.rttyBuf = w.rttyBuf[:0]
+	return text
+}
+
+// rttyFlushLocked sends accumulated RTTY text in 24-char KY chunks.
+// Must be called with w.mu held.
+func (w *Winkeyer) rttyFlushLocked() {
+	text := w.rttyTakeBuf()
+	if text == "" {
+		return
+	}
+	if w.trace {
+		log.Printf("WK trace: RTTY flush %q (%d chars)", text, len(text))
+	}
+	w.cat.SendRTTYText(text)
+}
+
+// rttyTxDelay estimates how long the K4 needs to transmit n characters of RTTY.
+// Uses 9 bits per character to account for 7.5-bit Baudot frames (1 start +
+// 5 data + 1.5 stop) plus FIGS/LTRS shift characters that get inserted when
+// switching between letters and figures (callsigns with numbers, exchanges).
+// Adds 1 second padding for K4 internal buffering, EOT, and TX/RX switching.
+func (w *Winkeyer) rttyTxDelay(n int) time.Duration {
+	if n <= 0 {
+		return 500 * time.Millisecond
+	}
+	// Baud rates: 0=45.45, 1=50, 2=75, 3=100
+	baud := 45.45
+	switch w.rttyBaudRate {
+	case 1:
+		baud = 50
+	case 2:
+		baud = 75
+	case 3:
+		baud = 100
+	}
+	msPerChar := 9000.0 / baud // ~9 bits accounts for shifts
+	return time.Duration(float64(n)*msPerChar+1000) * time.Millisecond
 }
 
 func (w *Winkeyer) updateXoff() {
@@ -681,6 +916,13 @@ func (w *Winkeyer) sendStatusLocked() {
 		log.Printf("WK trace: tx status 0x%02x", status)
 	}
 	w.writeByte(status)
+}
+
+// IsRTTY returns whether RTTY/FSK mode is currently active.
+func (w *Winkeyer) IsRTTY() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.rttyEnabled
 }
 
 // SendStatus sends a status byte (acquires lock).
