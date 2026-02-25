@@ -18,7 +18,7 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.24+
 - A virtual serial port pair (for WinKeyer mode):
   - **Windows:** [com0com](https://com0com.sourceforge.net/)
   - **Linux:** `socat`
@@ -30,17 +30,17 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ```bash
 # Build for current platform
-go build -o barncat-sparks .
+go build -o barncat-sparks ./cmd/barncat-sparks/
 
 # Cross-compile for Windows (GUI, no console window)
-GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe .
+GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe ./cmd/barncat-sparks/
 
 # Or use the build script
 ./build.sh
 
 # Generate Windows icon/manifest resources (only needed after changing winres/)
 go install github.com/tc-hib/go-winres@latest
-go-winres make
+(cd cmd/barncat-sparks && go-winres make)
 
 # Tests
 go test ./...
