@@ -20,7 +20,7 @@ type MIDIMapping struct {
 	Channel int                    `json:"channel"`
 	Number  int                    `json:"number"`
 	Action  string                 `json:"action"`
-	Opts    map[string]interface{} `json:"opts"`
+	Opts    map[string]any `json:"opts"`
 }
 
 // LoadMIDIConfig reads and parses a MIDI config JSON file.
@@ -123,7 +123,7 @@ func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 }
 
 // optFloat returns a float64 option from a mapping's opts map, or the fallback.
-func optFloat(opts map[string]interface{}, key string, fallback float64) float64 {
+func optFloat(opts map[string]any, key string, fallback float64) float64 {
 	if opts == nil {
 		return fallback
 	}
@@ -139,7 +139,7 @@ func optFloat(opts map[string]interface{}, key string, fallback float64) float64
 }
 
 // ccValue scales a MIDI CC value (0-127) to an output range, with optional invert.
-func ccValue(value, maxOut int, opts map[string]interface{}) int {
+func ccValue(value, maxOut int, opts map[string]any) int {
 	if optFloat(opts, "invert", 0) != 0 {
 		value = 127 - value
 	}

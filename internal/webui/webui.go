@@ -431,7 +431,7 @@ func (w *WebUI) handleDecode(rw http.ResponseWriter, r *http.Request) {
 		w.decodeBuf.Reset()
 		enabled := w.decodeEnabled
 		w.decodeMu.Unlock()
-		writeJSON(rw, map[string]interface{}{"enabled": enabled, "text": text})
+		writeJSON(rw, map[string]any{"enabled": enabled, "text": text})
 
 	case http.MethodPost:
 		var req struct {
@@ -498,7 +498,7 @@ func (w *WebUI) decodeLoop(ctx context.Context, c *cat.CATClient) {
 	}
 }
 
-func writeJSON(rw http.ResponseWriter, v interface{}) {
+func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(v)
 }

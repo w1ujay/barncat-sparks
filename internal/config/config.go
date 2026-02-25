@@ -30,7 +30,7 @@ type MappingEntry struct {
 	Type    string                 `json:"type"`
 	Channel int                    `json:"channel"`
 	Number  int                    `json:"number"`
-	Opts    map[string]interface{} `json:"opts,omitempty"`
+	Opts    map[string]any `json:"opts,omitempty"`
 }
 
 // DefaultAppConfig returns a config with sensible defaults.
