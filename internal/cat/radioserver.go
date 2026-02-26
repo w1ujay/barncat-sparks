@@ -222,6 +222,16 @@ func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 			s.radio.SendKY(text)
 		}
 
+	case "KZ":
+		if len(cmd) > 2 {
+			switch cmd[2] {
+			case '.':
+				s.radio.SendCWElement(true)
+			case '-':
+				s.radio.SendCWElement(false)
+			}
+		}
+
 	case "TX":
 		s.radio.SetPTT(true)
 

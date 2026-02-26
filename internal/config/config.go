@@ -22,6 +22,7 @@ type AppConfig struct {
 	LP100Port          string         `json:"lp100_port"`
 	KeyerSpeed    int            `json:"keyer_speed"`
 	MIDIDevice    string         `json:"midi_device"`
+	PaddleSwap     bool           `json:"paddle_swap"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
 	Mappings       []MappingEntry `json:"mappings"`
@@ -72,8 +73,9 @@ func SaveAppConfig(path string, cfg *AppConfig) error {
 // used by the existing MIDI driver.
 func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
 	mc := &midi.MIDIConfig{
-		Device:   c.MIDIDevice,
-		Mappings: make([]midi.MIDIMapping, len(c.Mappings)),
+		Device:     c.MIDIDevice,
+		PaddleSwap: c.PaddleSwap,
+		Mappings:   make([]midi.MIDIMapping, len(c.Mappings)),
 	}
 	for i, m := range c.Mappings {
 		mc.Mappings[i] = midi.MIDIMapping{

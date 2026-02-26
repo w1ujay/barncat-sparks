@@ -44,6 +44,7 @@ func (m *mockRadio) Close()                              {}
 func (m *mockRadio) SendKY(text string) error            { m.record(fmt.Sprintf("SendKY(%s)", text)); return nil }
 func (m *mockRadio) SendAbort() error                    { m.record("SendAbort()"); return nil }
 func (m *mockRadio) SendCWMessage(text string) error     { m.record(fmt.Sprintf("SendCWMessage(%s)", text)); return nil }
+func (m *mockRadio) SendCWElement(dit bool) error        { m.record(fmt.Sprintf("SendCWElement(%v)", dit)); return nil }
 func (m *mockRadio) SetSpeed(wpm int) error              { m.record(fmt.Sprintf("SetSpeed(%d)", wpm)); return nil }
 func (m *mockRadio) QuerySpeed() (int, error)            { m.record("QuerySpeed()"); return m.speed, nil }
 func (m *mockRadio) SetPTT(on bool) error                { m.record(fmt.Sprintf("SetPTT(%v)", on)); return nil }
@@ -215,6 +216,8 @@ func TestRadioServerSetCommands(t *testing.T) {
 		{"MD6;", "SetDataMode()"},
 		{"TD$205;", "SetTextDecode(true)"},
 		{"TD$000;", "SetTextDecode(false)"},
+		{"KZ.;", "SendCWElement(true)"},
+		{"KZ-;", "SendCWElement(false)"},
 	}
 
 	for _, tt := range tests {

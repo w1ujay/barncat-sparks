@@ -10,6 +10,7 @@ type Radio interface {
 	SendKY(text string) error
 	SendAbort() error
 	SendCWMessage(text string) error
+	SendCWElement(dit bool) error // KZ dit/dah element
 
 	// Keyer speed
 	SetSpeed(wpm int) error

@@ -496,6 +496,16 @@ func (c *CATClient) SetNotchFreq(hz int) error {
 	return c.Send(cmd)
 }
 
+// SendCWElement sends a single CW element (dit or dah) via the KZ command.
+// The K4 times the element based on its current keyer speed.
+func (c *CATClient) SendCWElement(dit bool) error {
+	cmd := "KZ-;"
+	if dit {
+		cmd = "KZ.;"
+	}
+	return c.Send(cmd)
+}
+
 // SendCWMessage sends a CW text message via the KY command.
 func (c *CATClient) SendCWMessage(text string) error {
 	// Send in chunks of up to 24 chars

@@ -55,6 +55,8 @@ var ActionRegistry = map[string]ActionDef{
 	"notch":       {Label: "Manual Notch Toggle"},
 	"notch_freq":  {Label: "Manual Notch Freq", Options: []OptionDef{{Key: "min", Label: "Min (Hz)", Default: "550"}, {Key: "max", Label: "Max (Hz)", Default: "650"}}},
 	"cw_msg":      {Label: "CW Message", Options: []OptionDef{{Key: "text", Label: "Text", Default: "CQ CQ CQ"}}},
+	"dit_paddle":  {Label: "Dit Paddle (KZ)"},
+	"dah_paddle":  {Label: "Dah Paddle (KZ)"},
 }
 
 // ActionNames returns sorted action names for populating dropdowns.

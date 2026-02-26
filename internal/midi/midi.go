@@ -10,8 +10,9 @@ import (
 
 // MIDIConfig holds the MIDI controller configuration.
 type MIDIConfig struct {
-	Device   string        `json:"device"`
-	Mappings []MIDIMapping `json:"mappings"`
+	Device     string        `json:"device"`
+	Mappings   []MIDIMapping `json:"mappings"`
+	PaddleSwap bool          `json:"paddle_swap"` // swap dit/dah paddle input
 }
 
 // MIDIMapping maps a MIDI event to a K4 action.
@@ -323,6 +324,14 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 				}
 			}
 		}
+
+	case "dit_paddle":
+		dit := !d.config.PaddleSwap
+		go d.cat.SendCWElement(dit)
+
+	case "dah_paddle":
+		dit := d.config.PaddleSwap
+		go d.cat.SendCWElement(dit)
 
 	default:
 		log.Printf("MIDI: unknown action %q", m.Action)
