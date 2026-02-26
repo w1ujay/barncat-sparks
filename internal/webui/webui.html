@@ -111,7 +111,7 @@ details summary:hover{color:#569cd6}
 <h2>MIDI</h2>
 <div class="form-row">
   <label for="midiDevice">Device</label>
-  <select id="midiDevice"><option value="">(no MIDI devices)</option></select>
+  <span style="display:flex;gap:6px"><select id="midiDevice" style="flex:1"><option value="">(no MIDI devices)</option></select><button class="secondary" onclick="rescanMIDI()" title="Rescan MIDI devices">&#x21bb;</button></span>
 </div>
 <details id="mappingsDetails">
   <summary>Mappings</summary>
@@ -188,6 +188,13 @@ async function init() {
   mappings = cfg.mappings || [];
   renderMappings();
   applyStatus(status);
+}
+
+async function rescanMIDI() {
+  const resp = await fetch('/api/midi-devices');
+  const devices = await resp.json();
+  const cur = document.getElementById('midiDevice').value;
+  populateSelect('midiDevice', devices, cur, '(no MIDI devices)');
 }
 
 function populateSelect(id, items, selected, placeholder) {

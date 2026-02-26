@@ -445,9 +445,8 @@ func TestRTTYCWStillWorksOutsideBrackets(t *testing.T) {
 	// Characters outside brackets go to CW buffer
 	wk.processByte('T')
 
-	// Should see busy status, then TX (auto-PTT from CW sendLoop), then KY
+	// Should see busy status, then KY (K4 break-in handles PTT for CW)
 	expectStatus(t, tp, true)
-	expectCmd(t, cmds, "TX")
 	expectCmd(t, cmds, "KY T")
 }
 

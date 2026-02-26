@@ -18,7 +18,7 @@ const (
 	BufferSize    = 64
 	XoffThreshold = 42 // Set XOFF when buffer >= 2/3 full
 	XonThreshold  = 20 // Clear XOFF when buffer drops below this
-	KYChunkSize   = 12 // Max chars per KY command (safety limit; word-split keeps chunks small)
+	KYChunkSize   = 24 // Max chars per KY command (K4 limit; larger chunks reduce inter-KY gaps)
 
 	// Status byte flags (OR'd with 0xC0)
 	StatusXoff    byte = 0x01
@@ -600,20 +600,10 @@ func (w *Winkeyer) bufferChar(ch byte) {
 // Runs in its own goroutine. done is closed on exit; cancel is monitored for abort.
 // Null bytes (0x00) in the buffer are placeholders from pointer commands and are skipped.
 //
-// Automatic PTT: TX; is sent before the first KY command, and RX; is sent
-// when the buffer empties or the loop is cancelled/paused.
+// PTT is NOT managed here — the K4's CW break-in handles TX/RX automatically
+// when KY commands are sent. Explicit PTT is only used for RTTY (handleRTTYChar).
 func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	defer close(done)
-
-	pttAsserted := false
-	defer func() {
-		if pttAsserted {
-			w.cat.SetPTT(false)
-			if w.trace {
-				log.Printf("WK trace: auto PTT off")
-			}
-		}
-	}()
 
 	// Brief coalescing delay — at 1200 baud bytes arrive every ~9ms,
 	// wait to accumulate a few chars before sending the first chunk.
@@ -631,6 +621,16 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		}
 
 		w.mu.Lock()
+		// Re-check cancel under the lock — if clearBuffer closed the
+		// channel while we were blocked on mu.Lock, exit without
+		// touching the buffer (prevents stale goroutine from stealing
+		// characters meant for a new sendLoop).
+		select {
+		case <-cancel:
+			w.mu.Unlock()
+			return
+		default:
+		}
 		if w.paused {
 			w.busy = false
 			w.xoff = false
@@ -690,16 +690,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		default:
 		}
 
-		// Assert PTT before the first KY command
-		if !pttAsserted {
-			w.cat.SetPTT(true)
-			pttAsserted = true
-			if w.trace {
-				log.Printf("WK trace: auto PTT on")
-			}
-		}
-
-		// Send KY command to K4
+		// Send KY command to K4 — K4 break-in handles PTT automatically
 		w.cat.SendKY(string(chunk))
 		if w.trace {
 			log.Printf("WK trace: KY \"%s\" (%d chars)", string(chunk), len(chunk))
