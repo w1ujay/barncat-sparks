@@ -7,8 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- LP-100A wattmeter serial driver (`internal/lp100a`) — polls power, SWR, impedance at 200ms intervals with peak SWR tracking (4s timeout)
+- LP-100A HTTP API on RadioServer port (`GET /api/lp100a`, `POST /api/lp100a/command`) — coexists with amp proxy and CAT on the same TCP connection
+- LP-100A serial port selector in web UI and `sparks-config.json` (`lp100_port`)
 - RF-Kit amplifier HTTP proxy on RadioServer port — multiplexes HTTP and CAT on the same TCP connection by peeking at the first bytes of each connection
 - Amplifier URL configuration field in web UI and `sparks-config.json` (`amp_url`)
+
+### Changed
+- RadioServer HTTP routing refactored from single handler to `http.ServeMux` with `Handle()` method for registering multiple HTTP handlers on the same port
 
 ## [0.2.1] - 2026-02-26
 

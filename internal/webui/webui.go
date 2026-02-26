@@ -17,6 +17,7 @@ import (
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
 	"github.com/ujay/barncat-sparks/internal/keyer"
+	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
 )
 
@@ -35,6 +36,7 @@ type WebUI struct {
 	midiDrv   *midi.MIDIDriver
 	catServer   *cat.CATServer
 	radioServer *cat.RadioServer
+	lp100       *lp100a.Driver
 	server    *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
@@ -228,7 +230,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start RadioServer if listen address configured
+	// Start RadioServer if listen address configured.
+	// Run() is deferred until after all Handle() calls (amp proxy, LP-100A, etc.).
 	if w.config.RadioServerListen != "" {
 		rsrv, err := cat.NewRadioServer(w.cat, w.config.RadioServerListen)
 		if err != nil {
@@ -241,8 +244,29 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				}
 			}
 			w.radioServer = rsrv
-			go rsrv.Run()
 		}
+	}
+
+	// Start LP-100A if port configured
+	if w.config.LP100Port != "" {
+		lp := lp100a.NewDriver(w.config.LP100Port)
+		if err := lp.Connect(); err != nil {
+			log.Printf("LP-100A: %v", err)
+			// Non-fatal — continue without wattmeter
+		} else {
+			lp.StartPolling()
+			w.lp100 = lp
+			if w.radioServer != nil {
+				h := lp.HTTPHandler()
+				w.radioServer.Handle("/api/lp100a", h)
+				w.radioServer.Handle("/api/lp100a/", h)
+			}
+		}
+	}
+
+	// Start RadioServer now that all HTTP handlers are registered
+	if w.radioServer != nil {
+		go w.radioServer.Run()
 	}
 
 	// Start WinKeyer if serial port selected
@@ -294,6 +318,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 			status += fmt.Sprintf(" (amp: %s)", w.config.AmpURL)
 		}
 	}
+	if w.lp100 != nil {
+		status += fmt.Sprintf(", LP-100A: %s", w.config.LP100Port)
+	}
 	if w.config.SerialPort != "" {
 		status += fmt.Sprintf(", WinKeyer: %s", w.config.SerialPort)
 	}
@@ -341,6 +368,11 @@ func (w *WebUI) stopLocked() {
 	if w.wk != nil {
 		w.wk.Close()
 		w.wk = nil
+	}
+	if w.lp100 != nil {
+		w.lp100.StopPolling()
+		w.lp100.Disconnect()
+		w.lp100 = nil
 	}
 	if w.radioServer != nil {
 		w.radioServer.Close()

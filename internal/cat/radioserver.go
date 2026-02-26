@@ -22,7 +22,8 @@ type RadioServer struct {
 	done     chan struct{}
 
 	ampURL     string          // RF-Kit amp base URL (empty = no proxy)
-	httpServer *http.Server    // serves amp proxy
+	httpMux    *http.ServeMux  // routes HTTP paths to handlers
+	httpServer *http.Server    // serves HTTP via chanListener
 	httpLn     *chanListener   // feeds HTTP connections to httpServer
 }
 
@@ -45,18 +46,29 @@ func (s *RadioServer) Addr() string {
 	return s.listener.Addr().String()
 }
 
+// Handle registers an HTTP handler on the RadioServer's shared mux. On the
+// first call it lazily creates the mux, chanListener, and httpServer. Must be
+// called before Run().
+func (s *RadioServer) Handle(pattern string, handler http.Handler) {
+	if s.httpMux == nil {
+		s.httpMux = http.NewServeMux()
+		s.httpLn = newChanListener(s.listener.Addr())
+		s.httpServer = &http.Server{Handler: s.httpMux}
+	}
+	s.httpMux.Handle(pattern, handler)
+}
+
 // SetAmpProxy configures a reverse proxy for the RF-Kit amplifier HTTP API.
-// Must be called before Run(). When set, the RadioServer multiplexes HTTP and
-// CAT traffic on the same TCP port by peeking at the first bytes of each
-// connection.
+// Must be called before Run(). The amp proxy is registered as the catch-all
+// "/" handler so that specific paths (e.g. /api/lp100a) registered via Handle
+// take priority.
 func (s *RadioServer) SetAmpProxy(ampURL string) error {
 	handler, err := newAmpProxy(ampURL)
 	if err != nil {
 		return fmt.Errorf("amp proxy: %w", err)
 	}
 	s.ampURL = ampURL
-	s.httpLn = newChanListener(s.listener.Addr())
-	s.httpServer = &http.Server{Handler: handler}
+	s.Handle("/", handler)
 	return nil
 }
 
@@ -67,7 +79,10 @@ func (s *RadioServer) Run() {
 	log.Printf("RadioServer: listening on %s", s.listener.Addr())
 
 	if s.httpServer != nil {
-		log.Printf("RadioServer: amp proxy enabled for %s", s.ampURL)
+		if s.ampURL != "" {
+			log.Printf("RadioServer: amp proxy enabled for %s", s.ampURL)
+		}
+		log.Printf("RadioServer: HTTP mux enabled")
 		go s.httpServer.Serve(s.httpLn)
 	}
 

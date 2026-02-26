@@ -108,6 +108,10 @@ details summary:hover{color:#569cd6}
   <input id="ampUrl" type="text" placeholder="http://192.168.1.101:8080">
 </div>
 <div class="form-row">
+  <label for="lp100Port">LP-100A Port</label>
+  <select id="lp100Port"><option value="">(none)</option></select>
+</div>
+<div class="form-row">
   <label for="serialPort">WinKeyer Port</label>
   <select id="serialPort"><option value="">(none)</option></select>
 </div>
@@ -176,6 +180,7 @@ async function init() {
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
+  populateSelect('lp100Port', ports, cfg.lp100_port, '(none)');
   populateSelect('midiDevice', devices, cfg.midi_device, '(no MIDI devices)');
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
@@ -350,6 +355,7 @@ function gatherConfig() {
     cat_listen: document.getElementById('catListen').value,
     radio_server_listen: document.getElementById('radioServerListen').value,
     amp_url: document.getElementById('ampUrl').value,
+    lp100_port: document.getElementById('lp100Port').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_device: document.getElementById('midiDevice').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,

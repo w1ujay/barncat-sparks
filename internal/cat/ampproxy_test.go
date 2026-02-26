@@ -173,6 +173,78 @@ func TestIsHTTP(t *testing.T) {
 	}
 }
 
+// TestMuxMultipleHandlers verifies that registering multiple HTTP handlers via
+// Handle() routes by path correctly — specific paths win over the catch-all.
+func TestMuxMultipleHandlers(t *testing.T) {
+	// Amp proxy as catch-all "/"
+	ampServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"handler": "amp", "path": r.URL.Path})
+	}))
+	defer ampServer.Close()
+
+	mock := &mockRadio{freqA: 14060000}
+	srv, err := NewRadioServer(mock, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register amp as catch-all
+	if err := srv.SetAmpProxy(ampServer.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	// Register a specific handler
+	srv.Handle("/api/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"handler": "test"})
+	}))
+
+	go srv.Run()
+	t.Cleanup(func() { srv.Close() })
+
+	addr := srv.Addr()
+
+	// Request to /api/test should hit the test handler, not the amp
+	resp, err := http.Get(fmt.Sprintf("http://%s/api/test", addr))
+	if err != nil {
+		t.Fatalf("GET /api/test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["handler"] != "test" {
+		t.Errorf("/api/test handler: got %q, want %q", result["handler"], "test")
+	}
+
+	// Request to /power should fall through to amp catch-all
+	resp2, err := http.Get(fmt.Sprintf("http://%s/power", addr))
+	if err != nil {
+		t.Fatalf("GET /power: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var result2 map[string]string
+	if err := json.NewDecoder(resp2.Body).Decode(&result2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result2["handler"] != "amp" {
+		t.Errorf("/power handler: got %q, want %q", result2["handler"], "amp")
+	}
+
+	// CAT still works
+	c := newTestClient(t, addr)
+	defer c.close()
+	c.send(t, "FA;")
+	got := c.recv(t)
+	if got != "FA00014060000" {
+		t.Errorf("CAT query: got %q, want FA00014060000", got)
+	}
+}
+
 // TestPrefixConn verifies that prefixConn replays the buffered bytes before
 // reading from the underlying connection.
 func TestPrefixConn(t *testing.T) {

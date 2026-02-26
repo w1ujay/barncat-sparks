@@ -19,6 +19,7 @@ type AppConfig struct {
 	CATListen          string         `json:"cat_listen"`
 	RadioServerListen  string         `json:"radio_server_listen"`
 	AmpURL             string         `json:"amp_url"`
+	LP100Port          string         `json:"lp100_port"`
 	KeyerSpeed    int            `json:"keyer_speed"`
 	MIDIDevice    string         `json:"midi_device"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
