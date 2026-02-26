@@ -20,7 +20,7 @@ type midiEvent struct {
 	data2  byte
 }
 
-// MIDIDriver connects to a MIDI device and dispatches actions to the K4.
+// MIDIDriver connects to MIDI devices and dispatches actions to the K4.
 type MIDIDriver struct {
 	mu        sync.Mutex
 	closeOnce sync.Once

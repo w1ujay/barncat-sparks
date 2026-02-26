@@ -217,7 +217,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		if err != nil {
 			log.Fatalf("Failed to load MIDI config %s: %v", midiConfigPath, err)
 		}
-		midiCfg.Device = midiDevice
+		midiCfg.Devices = []string{midiDevice}
 		midiDrv := midi.NewMIDIDriver(c, midiCfg)
 		go func() {
 			if err := midiDrv.Run(); err != nil {

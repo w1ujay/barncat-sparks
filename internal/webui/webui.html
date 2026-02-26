@@ -121,9 +121,10 @@ details summary:hover{color:#569cd6}
 </div>
 
 <h2>MIDI</h2>
-<div class="form-row">
-  <label for="midiDevice">Device</label>
-  <span style="display:flex;gap:6px"><select id="midiDevice" style="flex:1"><option value="">(no MIDI devices)</option></select><button class="secondary" onclick="rescanMIDI()" title="Rescan MIDI devices">&#x21bb;</button></span>
+<div id="midiDevicesContainer"></div>
+<div class="mapping-btns">
+  <button class="secondary" onclick="addMIDIDevice()">+ Add Device</button>
+  <button class="secondary" onclick="rescanMIDI()" title="Rescan MIDI devices">&#x21bb; Rescan</button>
 </div>
 <details id="mappingsDetails">
   <summary>Mappings</summary>
@@ -157,6 +158,8 @@ details summary:hover{color:#569cd6}
 <script>
 let actions = [];
 let mappings = [];
+let midiDevices = [];
+let availableMIDIDevices = [];
 let statusPoll = null;
 
 async function init() {
@@ -182,7 +185,9 @@ async function init() {
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
   populateSelect('lp100Port', ports, cfg.lp100_port, '(none)');
-  populateSelect('midiDevice', devices, cfg.midi_device, '(no MIDI devices)');
+  availableMIDIDevices = devices;
+  midiDevices = cfg.midi_devices || (cfg.midi_device ? [cfg.midi_device] : []);
+  renderMIDIDevices();
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
   document.getElementById('paddleSwap').checked = cfg.paddle_swap || false;
@@ -209,9 +214,8 @@ async function init() {
 
 async function rescanMIDI() {
   const resp = await fetch('/api/midi-devices');
-  const devices = await resp.json();
-  const cur = document.getElementById('midiDevice').value;
-  populateSelect('midiDevice', devices, cur, '(no MIDI devices)');
+  availableMIDIDevices = await resp.json();
+  renderMIDIDevices();
 }
 
 function populateSelect(id, items, selected, placeholder) {
@@ -224,6 +228,39 @@ function populateSelect(id, items, selected, placeholder) {
     if (item === selected) opt.selected = true;
     sel.appendChild(opt);
   }
+}
+
+function renderMIDIDevices() {
+  const container = document.getElementById('midiDevicesContainer');
+  if (midiDevices.length === 0) {
+    container.innerHTML = '<div class="no-mappings">(no MIDI devices — click "+ Add Device")</div>';
+    return;
+  }
+  let html = '';
+  for (let i = 0; i < midiDevices.length; i++) {
+    html += '<div class="form-row"><label>Device ' + (i+1) + '</label>' +
+      '<span style="display:flex;gap:6px">' +
+      '<select style="flex:1" onchange="midiDevices['+i+']=this.value">';
+    html += '<option value="">(none)</option>';
+    for (const d of availableMIDIDevices) {
+      const sel = d === midiDevices[i] ? ' selected' : '';
+      html += '<option value="'+d+'"'+sel+'>'+d+'</option>';
+    }
+    html += '</select>' +
+      '<button class="danger" onclick="removeMIDIDevice('+i+')" title="Remove">&times;</button>' +
+      '</span></div>';
+  }
+  container.innerHTML = html;
+}
+
+function addMIDIDevice() {
+  midiDevices.push('');
+  renderMIDIDevices();
+}
+
+function removeMIDIDevice(idx) {
+  midiDevices.splice(idx, 1);
+  renderMIDIDevices();
 }
 
 function renderMappings() {
@@ -359,7 +396,7 @@ function gatherConfig() {
     amp_url: document.getElementById('ampUrl').value,
     lp100_port: document.getElementById('lp100Port').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
-    midi_device: document.getElementById('midiDevice').value,
+    midi_devices: midiDevices.filter(d => d !== ''),
     paddle_swap: document.getElementById('paddleSwap').checked,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
     protocol_trace: document.getElementById('protocolTrace').checked,

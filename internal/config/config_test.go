@@ -152,8 +152,8 @@ func TestAppConfigToMIDIConfig(t *testing.T) {
 		},
 	}
 	mc := cfg.ToMIDIConfig()
-	if mc.Device != "DJ2GO2" {
-		t.Errorf("Device = %q, want DJ2GO2", mc.Device)
+	if len(mc.Devices) != 1 || mc.Devices[0] != "DJ2GO2" {
+		t.Errorf("Devices = %v, want [DJ2GO2]", mc.Devices)
 	}
 	if len(mc.Mappings) != 2 {
 		t.Fatalf("got %d mappings, want 2", len(mc.Mappings))

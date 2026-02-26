@@ -10,9 +10,21 @@ import (
 
 // MIDIConfig holds the MIDI controller configuration.
 type MIDIConfig struct {
-	Device     string        `json:"device"`
+	Device     string        `json:"device"`            // legacy single device
+	Devices    []string      `json:"devices,omitempty"` // multi-device
 	Mappings   []MIDIMapping `json:"mappings"`
 	PaddleSwap bool          `json:"paddle_swap"` // swap dit/dah paddle input
+}
+
+// GetDevices returns the configured device names, merging legacy and new fields.
+func (c *MIDIConfig) GetDevices() []string {
+	if len(c.Devices) > 0 {
+		return c.Devices
+	}
+	if c.Device != "" {
+		return []string{c.Device}
+	}
+	return nil
 }
 
 // MIDIMapping maps a MIDI event to a K4 action.

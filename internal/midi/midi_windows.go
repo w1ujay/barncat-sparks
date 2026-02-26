@@ -61,7 +61,7 @@ type MIDIDriver struct {
 	pttOn     bool
 	done      chan struct{}
 	events    chan midiEvent
-	hMidiIn   uintptr
+	hMidiIns  []uintptr
 
 	// VFO tuning state (accessed only from event loop goroutine)
 	vfoFreq     int
@@ -117,29 +117,18 @@ func ListMIDIDevices() error {
 	return nil
 }
 
-// Run opens the MIDI device and starts listening. Blocks until Close is called.
+// Run opens all configured MIDI devices and starts listening.
+// All devices share the same event channel and dispatch loop.
+// Blocks until Close is called.
 func (d *MIDIDriver) Run() error {
+	devices := d.config.GetDevices()
+	if len(devices) == 0 {
+		return fmt.Errorf("no MIDI devices configured")
+	}
+
 	count, _, _ := midiInGetNumDevs.Call()
 	if count == 0 {
 		return fmt.Errorf("no MIDI input devices found")
-	}
-
-	portIdx := -1
-	for i := uintptr(0); i < count; i++ {
-		var caps midiInCapsW
-		ret, _, _ := midiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
-		if ret != 0 {
-			continue
-		}
-		name := syscall.UTF16ToString(caps.szPname[:])
-		if strings.Contains(strings.ToLower(name), strings.ToLower(d.config.Device)) {
-			portIdx = int(i)
-			log.Printf("MIDI: matched device %q at port %d", name, i)
-			break
-		}
-	}
-	if portIdx < 0 {
-		return fmt.Errorf("MIDI device %q not found", d.config.Device)
 	}
 
 	cb := syscall.NewCallback(func(hMidiIn, wMsg, dwInstance, dwParam1, dwParam2 uintptr) uintptr {
@@ -156,32 +145,45 @@ func (d *MIDIDriver) Run() error {
 		return 0
 	})
 
-	var hMidiIn uintptr
-	ret, _, _ := midiInOpen.Call(
-		uintptr(unsafe.Pointer(&hMidiIn)),
-		uintptr(portIdx),
-		cb,
-		0,
-		callbackFunction,
-	)
-	if ret != 0 {
-		return fmt.Errorf("midiInOpen failed (MMRESULT=%d)", ret)
-	}
-	d.hMidiIn = hMidiIn
+	for _, deviceName := range devices {
+		portIdx := d.findDevice(deviceName, count)
+		if portIdx < 0 {
+			log.Printf("MIDI: device %q not found, skipping", deviceName)
+			continue
+		}
 
-	ret, _, _ = midiInStart.Call(hMidiIn)
-	if ret != 0 {
-		midiInClose.Call(hMidiIn)
-		return fmt.Errorf("midiInStart failed (MMRESULT=%d)", ret)
+		var hMidiIn uintptr
+		ret, _, _ := midiInOpen.Call(
+			uintptr(unsafe.Pointer(&hMidiIn)),
+			uintptr(portIdx),
+			cb,
+			0,
+			callbackFunction,
+		)
+		if ret != 0 {
+			log.Printf("MIDI: midiInOpen failed for %q (MMRESULT=%d)", deviceName, ret)
+			continue
+		}
+
+		ret, _, _ = midiInStart.Call(hMidiIn)
+		if ret != 0 {
+			midiInClose.Call(hMidiIn)
+			log.Printf("MIDI: midiInStart failed for %q (MMRESULT=%d)", deviceName, ret)
+			continue
+		}
+
+		d.hMidiIns = append(d.hMidiIns, hMidiIn)
+		log.Printf("MIDI: listening on %q (port %d)", deviceName, portIdx)
 	}
 
-	log.Printf("MIDI: listening on port %d", portIdx)
+	if len(d.hMidiIns) == 0 {
+		return fmt.Errorf("no MIDI devices could be opened")
+	}
 
 	for {
 		select {
 		case ev := <-d.events:
 			if ev.wMsg != mimData {
-				log.Printf("MIDI: callback msg=0x%03X", ev.wMsg)
 				continue
 			}
 			d.handleMIDIEvent(ev.status, ev.data1, ev.data2)
@@ -191,13 +193,30 @@ func (d *MIDIDriver) Run() error {
 	}
 }
 
-// Close shuts down the MIDI driver.
+// findDevice searches system MIDI devices for a name matching the substring.
+func (d *MIDIDriver) findDevice(name string, count uintptr) int {
+	for i := uintptr(0); i < count; i++ {
+		var caps midiInCapsW
+		ret, _, _ := midiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
+		if ret != 0 {
+			continue
+		}
+		devName := syscall.UTF16ToString(caps.szPname[:])
+		if strings.Contains(strings.ToLower(devName), strings.ToLower(name)) {
+			log.Printf("MIDI: matched %q at port %d", devName, i)
+			return int(i)
+		}
+	}
+	return -1
+}
+
+// Close shuts down the MIDI driver and releases all open devices.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
-		if d.hMidiIn != 0 {
-			midiInStop.Call(d.hMidiIn)
-			midiInReset.Call(d.hMidiIn)
-			midiInClose.Call(d.hMidiIn)
+		for _, h := range d.hMidiIns {
+			midiInStop.Call(h)
+			midiInReset.Call(h)
+			midiInClose.Call(h)
 		}
 		close(d.done)
 	})

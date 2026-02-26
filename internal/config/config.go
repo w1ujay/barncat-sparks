@@ -21,7 +21,8 @@ type AppConfig struct {
 	AmpURL             string         `json:"amp_url"`
 	LP100Port          string         `json:"lp100_port"`
 	KeyerSpeed    int            `json:"keyer_speed"`
-	MIDIDevice    string         `json:"midi_device"`
+	MIDIDevice    string         `json:"midi_device,omitempty"`
+	MIDIDevices   []string       `json:"midi_devices,omitempty"`
 	PaddleSwap     bool           `json:"paddle_swap"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
@@ -69,11 +70,23 @@ func SaveAppConfig(path string, cfg *AppConfig) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// GetMIDIDevices returns the configured MIDI device names, merging legacy
+// single-device and multi-device fields for backward compatibility.
+func (c *AppConfig) GetMIDIDevices() []string {
+	if len(c.MIDIDevices) > 0 {
+		return c.MIDIDevices
+	}
+	if c.MIDIDevice != "" {
+		return []string{c.MIDIDevice}
+	}
+	return nil
+}
+
 // ToMIDIConfig converts AppConfig mappings to the MIDIConfig format
 // used by the existing MIDI driver.
 func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
 	mc := &midi.MIDIConfig{
-		Device:     c.MIDIDevice,
+		Devices:    c.GetMIDIDevices(),
 		PaddleSwap: c.PaddleSwap,
 		Mappings:   make([]midi.MIDIMapping, len(c.Mappings)),
 	}
