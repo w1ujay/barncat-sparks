@@ -279,6 +279,42 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		d.notchHz = hz
 		go d.cat.SetNotchFreq(hz)
 
+	case "rf_gain_adjust":
+		step := int(optFloat(m.Opts, "step", 1))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustRFGain(0, delta)
+		}
+
+	case "rf_gain_b_adjust":
+		step := int(optFloat(m.Opts, "step", 1))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustRFGain(1, delta)
+		}
+
+	case "rf_gain_up":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(0, -step)
+
+	case "rf_gain_down":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(0, step)
+
+	case "rf_gain_b_up":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(1, -step)
+
+	case "rf_gain_b_down":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(1, step)
+
+	case "rf_gain_toggle":
+		go d.cat.ToggleRFGain(0)
+
+	case "rf_gain_b_toggle":
+		go d.cat.ToggleRFGain(1)
+
 	case "cw_msg":
 		if m.Opts != nil {
 			if text, ok := m.Opts["text"]; ok {
@@ -371,6 +407,23 @@ func (d *MIDIDriver) tuneVFOB(value, step int) {
 	}
 	d.lastTuneBAt = now
 	d.cat.SetFreqB(d.vfoBFreq)
+}
+
+// adjustRFGain changes the RF gain attenuation by delta dB.
+// Tracks current level locally (defaults to 0 = full gain).
+func (d *MIDIDriver) adjustRFGain(recv int, delta int) {
+	gain := &d.rfGain
+	if recv == 1 {
+		gain = &d.rfGainB
+	}
+	*gain += delta
+	if *gain < 0 {
+		*gain = 0
+	}
+	if *gain > 60 {
+		*gain = 60
+	}
+	go d.cat.SetRFGain(recv, *gain)
 }
 
 // adjustFilter changes the filter bandwidth by deltaHz.

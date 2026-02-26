@@ -24,7 +24,7 @@ type midiEvent struct {
 type MIDIDriver struct {
 	mu        sync.Mutex
 	closeOnce sync.Once
-	cat       *cat.CATClient
+	cat       cat.Radio
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool
@@ -48,10 +48,14 @@ type MIDIDriver struct {
 	notchOn  bool
 	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
 	filterBW int // current filter BW in Hz (0 = unknown, default 500)
+
+	// RF gain state (accessed only from event loop goroutine)
+	rfGain  int // main RX attenuation level (0-60, 0=full gain)
+	rfGainB int // sub RX attenuation level
 }
 
 // NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(c *cat.CATClient, config *MIDIConfig) *MIDIDriver {
+func NewMIDIDriver(c cat.Radio, config *MIDIConfig) *MIDIDriver {
 	return &MIDIDriver{
 		cat:    c,
 		config: config,

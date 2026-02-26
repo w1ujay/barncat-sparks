@@ -266,6 +266,17 @@ func (c *CATClient) SetVolume(recv, level int) error {
 	return c.Send(cmd)
 }
 
+// ToggleRFGain toggles RF gain between full and reduced for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: RG/; (main) or RG$/; (sub).
+func (c *CATClient) ToggleRFGain(recv int) error {
+	cmd := "RG/;"
+	if recv == 1 {
+		cmd = "RG$/;"
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.Send(cmd)
+}
+
 // SetRFGain sets the K4 RF gain attenuation (0-60 dB) for a receiver.
 // recv: 0 = main, 1 = sub. K4 format: RG-nn; (main) or RG$-nn; (sub).
 // level 0 = no attenuation (full gain), 60 = max attenuation.
