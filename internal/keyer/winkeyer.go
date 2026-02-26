@@ -40,7 +40,7 @@ const (
 // the Winkeyer binary protocol into K4 CAT commands (KY, KS, etc).
 type Winkeyer struct {
 	port serial.Port
-	cat  *cat.CATClient
+	cat  cat.Radio
 
 	mu       sync.Mutex
 	hostOpen bool
@@ -85,7 +85,7 @@ type Winkeyer struct {
 	trace bool
 }
 
-func NewWinkeyer(c *cat.CATClient) *Winkeyer {
+func NewWinkeyer(c cat.Radio) *Winkeyer {
 	return &Winkeyer{
 		cat: c,
 		wpm: 25,

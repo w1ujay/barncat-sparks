@@ -30,7 +30,7 @@ type WebUI struct {
 	cfgPath   string
 	running   bool
 	statusMsg string
-	cat       *cat.CATClient
+	cat       cat.Radio
 	wk        *keyer.Winkeyer
 	midiDrv   *midi.MIDIDriver
 	catServer *cat.CATServer
@@ -196,29 +196,28 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Connect CAT (TCP or serial)
-	w.cat = cat.NewCATClient()
+	client := cat.NewCATClient()
 	switch w.config.CATTransport {
 	case "serial":
 		w.statusMsg = "Connecting to radio via serial..."
-		if err := w.cat.ConnectSerial(w.config.CATSerialPort, w.config.CATSerialBaud); err != nil {
+		if err := client.ConnectSerial(w.config.CATSerialPort, w.config.CATSerialBaud); err != nil {
 			w.statusMsg = fmt.Sprintf("CAT serial error: %v", err)
-			w.cat = nil
 			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 			return
 		}
 	default:
 		w.statusMsg = "Connecting to radio via TCP..."
-		if err := w.cat.ConnectTCP(w.config.CATAddress); err != nil {
+		if err := client.ConnectTCP(w.config.CATAddress); err != nil {
 			w.statusMsg = fmt.Sprintf("CAT TCP error: %v", err)
-			w.cat = nil
 			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 			return
 		}
 	}
+	w.cat = client
 
 	// Start CATServer if listen address configured
 	if w.config.CATListen != "" {
-		srv, err := cat.NewCATServer(w.cat, w.config.CATListen)
+		srv, err := cat.NewCATServer(client, w.config.CATListen)
 		if err != nil {
 			w.statusMsg = fmt.Sprintf("CATServer error: %v", err)
 			// Non-fatal — continue without server
@@ -476,7 +475,7 @@ func (w *WebUI) handleDecode(rw http.ResponseWriter, r *http.Request) {
 }
 
 // decodeLoop polls the K4 text decoder every 250ms and accumulates text.
-func (w *WebUI) decodeLoop(ctx context.Context, c *cat.CATClient) {
+func (w *WebUI) decodeLoop(ctx context.Context, c cat.Radio) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
