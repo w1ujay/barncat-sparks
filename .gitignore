@@ -2,4 +2,6 @@ bin/
 barncat-sparks
 *.log
 *.syso
+dist/
+docs/*.pdf
 .worktrees/

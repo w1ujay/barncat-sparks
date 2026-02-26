@@ -342,8 +342,8 @@ func relativeCC(value, step int) int {
 
 // tuneVFO adjusts VFO A frequency relative to current.
 // Caches frequency locally and throttles CAT commands to avoid flooding the radio.
-// Re-queries the radio if the cache is stale (>2s idle) so band changes and
-// external tuning are picked up automatically.
+// Re-queries the radio on the first knob turn after any idle gap (>50ms) so band
+// changes and external tuning are picked up automatically.
 // Must be called from the event loop goroutine (not concurrently).
 func (d *MIDIDriver) tuneVFO(value, step int) {
 	delta := relativeCC(value, step)
@@ -353,8 +353,8 @@ func (d *MIDIDriver) tuneVFO(value, step int) {
 
 	now := time.Now()
 
-	// Re-query radio if cache is stale (frequency may have changed externally)
-	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 2*time.Second {
+	// Re-query radio on first turn after idle (frequency may have changed externally)
+	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 250*time.Millisecond {
 		hz, err := d.cat.GetFreqA()
 		if err != nil {
 			log.Printf("MIDI: GetFreqA failed: %v", err)
@@ -387,7 +387,7 @@ func (d *MIDIDriver) tuneVFOB(value, step int) {
 
 	now := time.Now()
 
-	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 2*time.Second {
+	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 250*time.Millisecond {
 		hz, err := d.cat.GetFreqB()
 		if err != nil {
 			log.Printf("MIDI: GetFreqB failed: %v", err)

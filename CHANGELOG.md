@@ -6,8 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-26
+
 ### Added
 - `RadioServer` — protocol-translating TCP server that wraps any `Radio` interface and serves K4-compatible CAT over TCP, enabling future K3 support and remote operating
+- GoReleaser configuration for automated Windows builds and GitHub Releases
 
 ## [0.2.0] - 2026-02-25
 

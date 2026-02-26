@@ -33,7 +33,8 @@ type WebUI struct {
 	cat       cat.Radio
 	wk        *keyer.Winkeyer
 	midiDrv   *midi.MIDIDriver
-	catServer *cat.CATServer
+	catServer   *cat.CATServer
+	radioServer *cat.RadioServer
 	server    *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
@@ -227,6 +228,18 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Start RadioServer if listen address configured
+	if w.config.RadioServerListen != "" {
+		rsrv, err := cat.NewRadioServer(w.cat, w.config.RadioServerListen)
+		if err != nil {
+			w.statusMsg = fmt.Sprintf("RadioServer error: %v", err)
+			// Non-fatal — continue without server
+		} else {
+			w.radioServer = rsrv
+			go rsrv.Run()
+		}
+	}
+
 	// Start WinKeyer if serial port selected
 	if w.config.SerialPort != "" {
 		w.wk = keyer.NewWinkeyer(w.cat)
@@ -269,6 +282,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	if w.config.CATListen != "" {
 		status += fmt.Sprintf(", Server: %s", w.config.CATListen)
+	}
+	if w.config.RadioServerListen != "" {
+		status += fmt.Sprintf(", RadioServer: %s", w.config.RadioServerListen)
 	}
 	if w.config.SerialPort != "" {
 		status += fmt.Sprintf(", WinKeyer: %s", w.config.SerialPort)
@@ -317,6 +333,10 @@ func (w *WebUI) stopLocked() {
 	if w.wk != nil {
 		w.wk.Close()
 		w.wk = nil
+	}
+	if w.radioServer != nil {
+		w.radioServer.Close()
+		w.radioServer = nil
 	}
 	if w.catServer != nil {
 		w.catServer.Close()

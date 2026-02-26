@@ -46,6 +46,7 @@ func main() {
 	catSerialPort := flag.String("cat-serial", "", "Serial port for radio CAT (e.g., COM3)")
 	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
+	radioListen := flag.String("radio-listen", "", "TCP listen address for RadioServer (e.g., :9400)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -77,7 +78,7 @@ func main() {
 	// If CLI flags specify port or midi, run headless (backwards compatible)
 	if *portName != "" || *midiDevice != "" || *noGUI {
 		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
-			*catTransport, *catSerialPort, *catBaud, *catListen)
+			*catTransport, *catSerialPort, *catBaud, *catListen, *radioListen)
 		return
 	}
 
@@ -86,7 +87,7 @@ func main() {
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
-	catTransport, catSerialPort string, catBaud int, catListen string) {
+	catTransport, catSerialPort string, catBaud int, catListen, radioListen string) {
 	// Load config for defaults if CLI flags are sparse
 	cfg, _ := config.LoadAppConfig(cfgPath)
 	if cfg == nil {
@@ -115,6 +116,9 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if catListen == "" {
 		catListen = cfg.CATListen
 	}
+	if radioListen == "" {
+		radioListen = cfg.RadioServerListen
+	}
 	if speed == 0 {
 		speed = cfg.KeyerSpeed
 	}
@@ -138,6 +142,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		fmt.Fprintln(os.Stderr, "  -cat-serial     Serial port for radio CAT (e.g., COM3)")
 		fmt.Fprintln(os.Stderr, "  -cat-baud       Baud rate for serial CAT (default: 38400)")
 		fmt.Fprintln(os.Stderr, "  -cat-listen     TCP listen address for CAT server (e.g., :9300)")
+		fmt.Fprintln(os.Stderr, "  -radio-listen   TCP listen address for RadioServer (e.g., :9400)")
 		fmt.Fprintln(os.Stderr, "  -speed          Initial keyer speed in WPM (default: 25)")
 		fmt.Fprintln(os.Stderr, "  -config         Path to config file")
 		fmt.Fprintln(os.Stderr, "  -nogui          Run in headless mode (no web UI)")
@@ -181,6 +186,17 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		go srv.Run()
 		defer srv.Close()
 		log.Printf("  CATServer: %s", catListen)
+	}
+
+	// Start RadioServer if listen address configured
+	if radioListen != "" {
+		rsrv, err := cat.NewRadioServer(c, radioListen)
+		if err != nil {
+			log.Fatalf("RadioServer: %v", err)
+		}
+		go rsrv.Run()
+		defer rsrv.Close()
+		log.Printf("  RadioServer: %s", radioListen)
 	}
 
 	if portName != "" {

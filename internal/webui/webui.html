@@ -100,6 +100,10 @@ details summary:hover{color:#569cd6}
   <input id="catListen" type="text" placeholder="(disabled)">
 </div>
 <div class="form-row">
+  <label for="radioServerListen">RadioServer (listen)</label>
+  <input id="radioServerListen" type="text" placeholder="(disabled)">
+</div>
+<div class="form-row">
   <label for="serialPort">WinKeyer Port</label>
   <select id="serialPort"><option value="">(none)</option></select>
 </div>
@@ -174,6 +178,7 @@ async function init() {
   document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
   document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
+  document.getElementById('radioServerListen').value = cfg.radio_server_listen || '';
 
   // Set transport radio
   const transport = cfg.cat_transport || 'tcp';
@@ -338,6 +343,7 @@ function gatherConfig() {
     cat_serial_port: document.getElementById('catSerialPort').value,
     cat_serial_baud: parseInt(document.getElementById('catBaud').value) || 38400,
     cat_listen: document.getElementById('catListen').value,
+    radio_server_listen: document.getElementById('radioServerListen').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_device: document.getElementById('midiDevice').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,

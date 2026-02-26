@@ -605,10 +605,12 @@ func (w *Winkeyer) bufferChar(ch byte) {
 func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	defer close(done)
 
-	// Brief coalescing delay — at 1200 baud bytes arrive every ~9ms,
-	// wait to accumulate a few chars before sending the first chunk.
+	// Coalescing delay — at 1200 baud bytes arrive every ~9ms; a 12-char
+	// CQ message takes ~110ms. Wait long enough to capture the full
+	// message in one KY chunk — splitting into multiple KY commands
+	// causes audible gaps because the K4 drops out of TX between them.
 	select {
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(120 * time.Millisecond):
 	case <-cancel:
 		return
 	}

@@ -16,7 +16,8 @@ type AppConfig struct {
 	CATTransport  string         `json:"cat_transport"`
 	CATSerialPort string         `json:"cat_serial_port"`
 	CATSerialBaud int            `json:"cat_serial_baud"`
-	CATListen     string         `json:"cat_listen"`
+	CATListen          string         `json:"cat_listen"`
+	RadioServerListen  string         `json:"radio_server_listen"`
 	KeyerSpeed    int            `json:"keyer_speed"`
 	MIDIDevice    string         `json:"midi_device"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
