@@ -1,4 +1,5 @@
 bin/
+barncat-sparks
 *.log
 *.syso
 .worktrees/
