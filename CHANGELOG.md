@@ -6,21 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-25
+
 ### Added
 - RTTY/FSK support via WinKeyer admin command 0x13 — N1MM can send RTTY text through bracket delimiters
 - CW/RTTY text decode panel in web UI (polls K4 text decoder via TT command)
+- RF gain MIDI controls: encoder adjust, step up/down buttons, and toggle (RG/;) for main and sub receivers
 - Application versioning with build-time injection (`-ldflags "-X github.com/ujay/barncat-sparks/internal/config.Version=X.Y.Z"`)
 - `-version` flag to print version and exit
 - Version displayed in web UI header and page title
 - App-mode browser window (chromeless Chrome/Edge `--app` mode) for native GUI feel
 - Fallback to default browser when Chrome/Edge is not available
 - Graceful shutdown: closing the browser window exits the program, Ctrl+C closes the browser
+- MIDI device rescan button in web UI (hot-plug without restart)
+- `Radio` interface (`internal/cat/radio.go`) decoupling subsystems from concrete CATClient
 - CHANGELOG.md
 
 ### Changed
 - Reorganized codebase into Go packages: `internal/cat`, `internal/keyer`, `internal/midi`, `internal/config`, `internal/webui`, and `cmd/barncat-sparks`
 - Minimum Go version bumped from 1.21 to 1.24
 - Build target changed from `.` to `./cmd/barncat-sparks/`
+- CW chunk size increased to 24 chars (K4 KY max) to reduce inter-chunk gaps
+- Winkeyer, MIDIDriver, and WebUI now depend on `cat.Radio` interface instead of `*cat.CATClient`
+
+### Fixed
+- Removed auto-PTT (TX/RX) from CW sendLoop — K4 break-in handles PTT, eliminates VOX warnings
+- Fixed race condition where clear buffer + immediate new text could drop characters (sendLoop cancel check under lock)
 
 ## [0.1.0] - 2025-01-01
 
