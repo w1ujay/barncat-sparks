@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- RF-Kit amplifier HTTP proxy on RadioServer port — multiplexes HTTP and CAT on the same TCP connection by peeking at the first bytes of each connection
+- Amplifier URL configuration field in web UI and `sparks-config.json` (`amp_url`)
+
 ## [0.2.1] - 2026-02-26
 
 ### Added

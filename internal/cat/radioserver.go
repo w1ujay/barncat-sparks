@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 )
@@ -19,6 +20,10 @@ type RadioServer struct {
 	mu       sync.Mutex
 	clients  map[net.Conn]struct{}
 	done     chan struct{}
+
+	ampURL     string          // RF-Kit amp base URL (empty = no proxy)
+	httpServer *http.Server    // serves amp proxy
+	httpLn     *chanListener   // feeds HTTP connections to httpServer
 }
 
 // NewRadioServer creates a RadioServer listening on the given address.
@@ -40,9 +45,32 @@ func (s *RadioServer) Addr() string {
 	return s.listener.Addr().String()
 }
 
+// SetAmpProxy configures a reverse proxy for the RF-Kit amplifier HTTP API.
+// Must be called before Run(). When set, the RadioServer multiplexes HTTP and
+// CAT traffic on the same TCP port by peeking at the first bytes of each
+// connection.
+func (s *RadioServer) SetAmpProxy(ampURL string) error {
+	handler, err := newAmpProxy(ampURL)
+	if err != nil {
+		return fmt.Errorf("amp proxy: %w", err)
+	}
+	s.ampURL = ampURL
+	s.httpLn = newChanListener(s.listener.Addr())
+	s.httpServer = &http.Server{Handler: handler}
+	return nil
+}
+
 // Run accepts TCP connections and dispatches commands. Blocks until Close is called.
+// If an amp proxy is configured, HTTP and CAT connections are multiplexed by
+// peeking at the first 4 bytes of each connection.
 func (s *RadioServer) Run() {
 	log.Printf("RadioServer: listening on %s", s.listener.Addr())
+
+	if s.httpServer != nil {
+		log.Printf("RadioServer: amp proxy enabled for %s", s.ampURL)
+		go s.httpServer.Serve(s.httpLn)
+	}
+
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -55,7 +83,36 @@ func (s *RadioServer) Run() {
 			}
 		}
 		log.Printf("RadioServer: client connected from %s", conn.RemoteAddr())
-		go s.handleClient(conn)
+
+		if s.httpLn != nil {
+			go s.routeConn(conn)
+		} else {
+			go s.handleClient(conn)
+		}
+	}
+}
+
+// routeConn peeks at the first bytes of a connection to determine whether it
+// is an HTTP request or a raw CAT command, then routes accordingly. A regular
+// Read (not ReadFull) is used because short CAT commands like "FA;" may deliver
+// fewer than 4 bytes.
+func (s *RadioServer) routeConn(conn net.Conn) {
+	peek := make([]byte, 4)
+	n, err := conn.Read(peek)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	wrapped := &prefixConn{Conn: conn, buf: peek[:n]}
+
+	if isHTTP(peek[:n]) {
+		select {
+		case s.httpLn.ch <- wrapped:
+		case <-s.done:
+			conn.Close()
+		}
+	} else {
+		s.handleClient(wrapped)
 	}
 }
 
@@ -306,6 +363,12 @@ func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 func (s *RadioServer) Close() {
 	close(s.done)
 	s.listener.Close()
+	if s.httpServer != nil {
+		s.httpServer.Close()
+	}
+	if s.httpLn != nil {
+		s.httpLn.Close()
+	}
 	s.mu.Lock()
 	for conn := range s.clients {
 		conn.Close()

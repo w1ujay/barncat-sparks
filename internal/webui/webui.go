@@ -235,6 +235,11 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 			w.statusMsg = fmt.Sprintf("RadioServer error: %v", err)
 			// Non-fatal — continue without server
 		} else {
+			if w.config.AmpURL != "" {
+				if err := rsrv.SetAmpProxy(w.config.AmpURL); err != nil {
+					log.Printf("RadioServer: amp proxy error: %v", err)
+				}
+			}
 			w.radioServer = rsrv
 			go rsrv.Run()
 		}
@@ -285,6 +290,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	if w.config.RadioServerListen != "" {
 		status += fmt.Sprintf(", RadioServer: %s", w.config.RadioServerListen)
+		if w.config.AmpURL != "" {
+			status += fmt.Sprintf(" (amp: %s)", w.config.AmpURL)
+		}
 	}
 	if w.config.SerialPort != "" {
 		status += fmt.Sprintf(", WinKeyer: %s", w.config.SerialPort)

@@ -104,6 +104,10 @@ details summary:hover{color:#569cd6}
   <input id="radioServerListen" type="text" placeholder="(disabled)">
 </div>
 <div class="form-row">
+  <label for="ampUrl">Amplifier URL</label>
+  <input id="ampUrl" type="text" placeholder="http://192.168.1.101:8080">
+</div>
+<div class="form-row">
   <label for="serialPort">WinKeyer Port</label>
   <select id="serialPort"><option value="">(none)</option></select>
 </div>
@@ -179,6 +183,7 @@ async function init() {
   document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
   document.getElementById('radioServerListen').value = cfg.radio_server_listen || '';
+  document.getElementById('ampUrl').value = cfg.amp_url || '';
 
   // Set transport radio
   const transport = cfg.cat_transport || 'tcp';
@@ -344,6 +349,7 @@ function gatherConfig() {
     cat_serial_baud: parseInt(document.getElementById('catBaud').value) || 38400,
     cat_listen: document.getElementById('catListen').value,
     radio_server_listen: document.getElementById('radioServerListen').value,
+    amp_url: document.getElementById('ampUrl').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_device: document.getElementById('midiDevice').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
