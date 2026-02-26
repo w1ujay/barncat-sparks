@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"path/filepath"
@@ -16,7 +16,7 @@ func TestSaveAndLoadAppConfig(t *testing.T) {
 		MIDIDevice:     "DJ2GO2",
 		MinimizeToTray: true,
 		Mappings: []MappingEntry{
-			{Action: "vfo_tune", Type: "cc", Channel: 0, Number: 1, Opts: map[string]interface{}{"step": float64(10)}},
+			{Action: "vfo_tune", Type: "cc", Channel: 0, Number: 1, Opts: map[string]any{"step": float64(10)}},
 			{Action: "volume", Type: "cc", Channel: 0, Number: 7},
 		},
 	}

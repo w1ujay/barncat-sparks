@@ -1,13 +1,13 @@
 //go:build windows
 
-package main
+package midi
 
 import (
 	"syscall"
 	"unsafe"
 )
 
-func enumerateMIDIDevices() []string {
+func EnumerateMIDIDevices() []string {
 	count, _, _ := midiInGetNumDevs.Call()
 	if count == 0 {
 		return nil

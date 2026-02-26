@@ -1,4 +1,4 @@
-package main
+package cat
 
 import (
 	"bufio"
@@ -59,7 +59,7 @@ func TestCATServerRelaysCommands(t *testing.T) {
 	// The client should get the response back
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	scanner := bufio.NewScanner(conn)
-	scanner.Split(splitSemicolon)
+	scanner.Split(SplitSemicolon)
 	if scanner.Scan() {
 		resp := scanner.Text()
 		if resp != "FA00014053284" {

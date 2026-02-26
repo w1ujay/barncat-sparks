@@ -1,6 +1,6 @@
-package main
+package config
 
-// Version is set at build time via -ldflags "-X main.Version=X.Y.Z"
+// Version is set at build time via -ldflags "-X github.com/ujay/barncat-sparks/internal/config.Version=X.Y.Z"
 var Version = "0.0.1"
 
 // Tagline is the project tribute displayed in the About section.

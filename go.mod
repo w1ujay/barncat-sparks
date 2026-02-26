@@ -1,6 +1,6 @@
 module github.com/ujay/barncat-sparks
 
-go 1.21
+go 1.24
 
 require (
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808

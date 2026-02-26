@@ -1,5 +1,5 @@
 // catclient_test.go
-package main
+package cat
 
 import (
 	"bufio"
@@ -26,7 +26,7 @@ func mockCAT(t *testing.T) (net.Listener, chan string) {
 		}
 		defer conn.Close()
 		scanner := bufio.NewScanner(conn)
-		scanner.Split(splitSemicolon)
+		scanner.Split(SplitSemicolon)
 		for scanner.Scan() {
 			txt := scanner.Text()
 			if txt != "" {
@@ -55,7 +55,7 @@ func mockCATResponder(t *testing.T, handler func(cmd string, conn net.Conn)) (ne
 		}
 		defer conn.Close()
 		scanner := bufio.NewScanner(conn)
-		scanner.Split(splitSemicolon)
+		scanner.Split(SplitSemicolon)
 		for scanner.Scan() {
 			txt := scanner.Text()
 			if txt != "" {
@@ -88,12 +88,17 @@ func connectClient(t *testing.T, ln net.Listener) *CATClient {
 
 func expectCmd(t *testing.T, cmds chan string, want string) {
 	t.Helper()
+	expectCmdTimeout(t, cmds, want, 2*time.Second)
+}
+
+func expectCmdTimeout(t *testing.T, cmds chan string, want string, timeout time.Duration) {
+	t.Helper()
 	select {
 	case got := <-cmds:
 		if got != want {
 			t.Errorf("got command %q, want %q", got, want)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(timeout):
 		t.Fatalf("timed out waiting for command %q", want)
 	}
 }
@@ -177,6 +182,118 @@ func TestSwapVFO(t *testing.T) {
 	c := connectClient(t, ln)
 	c.SwapVFO()
 	expectCmd(t, cmds, "SWT11")
+}
+
+func TestSetDataMode(t *testing.T) {
+	ln, cmds := mockCAT(t)
+	c := connectClient(t, ln)
+	c.SetDataMode()
+	expectCmd(t, cmds, "MD6")
+	expectCmd(t, cmds, "DT2")
+}
+
+func TestSetCWMode(t *testing.T) {
+	ln, cmds := mockCAT(t)
+	c := connectClient(t, ln)
+	c.SetCWMode()
+	expectCmd(t, cmds, "MD3")
+}
+
+func TestSendRTTYText(t *testing.T) {
+	ln, cmds := mockCAT(t)
+	c := connectClient(t, ln)
+	c.SendRTTYText("TEST DE W1AW")
+	expectCmd(t, cmds, "KY TEST DE W1AW")
+}
+
+func TestSendRTTYTextChunking(t *testing.T) {
+	ln, cmds := mockCAT(t)
+	c := connectClient(t, ln)
+	// 30 chars should split into 24 + 6
+	c.SendRTTYText("ABCDEFGHIJKLMNOPQRSTUVWXABCDEF")
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWX")
+	expectCmd(t, cmds, "KY ABCDEF")
+}
+
+func TestSendRTTYEOT(t *testing.T) {
+	ln, cmds := mockCAT(t)
+	c := connectClient(t, ln)
+	c.SendRTTYEOT()
+	expectCmd(t, cmds, "KY |")
+}
+
+func TestQueryDecode(t *testing.T) {
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		if cmd == "TT" {
+			fmt.Fprint(conn, "TT05HELLO;")
+		}
+	})
+	c := connectClient(t, ln)
+	text, err := c.QueryDecode()
+	if err != nil {
+		t.Fatalf("QueryDecode() error: %v", err)
+	}
+	if text != "HELLO" {
+		t.Errorf("QueryDecode() = %q, want %q", text, "HELLO")
+	}
+}
+
+func TestQueryDecodeEmpty(t *testing.T) {
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		if cmd == "TT" {
+			fmt.Fprint(conn, "TT00;")
+		}
+	})
+	c := connectClient(t, ln)
+	text, err := c.QueryDecode()
+	if err != nil {
+		t.Fatalf("QueryDecode() error: %v", err)
+	}
+	if text != "" {
+		t.Errorf("QueryDecode() = %q, want empty", text)
+	}
+}
+
+func TestQueryDecodeTimeout(t *testing.T) {
+	ln, _ := mockCAT(t)
+	c := connectClient(t, ln)
+	text, err := c.QueryDecode()
+	if err != nil {
+		t.Fatalf("QueryDecode() error: %v", err)
+	}
+	if text != "" {
+		t.Errorf("QueryDecode() = %q, want empty on timeout", text)
+	}
+}
+
+func TestTTResponseRoutedToDecodeCh(t *testing.T) {
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		if cmd == "TT" {
+			fmt.Fprint(conn, "TT03CQ ;")
+		}
+	})
+	c := connectClient(t, ln)
+
+	// Send TT query to trigger response
+	c.Send("TT;")
+
+	// TT response should arrive on decodeCh
+	select {
+	case resp := <-c.decodeCh:
+		if resp != "TT03CQ " {
+			t.Errorf("decodeCh got %q, want %q", resp, "TT03CQ ")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for decodeCh")
+	}
+
+	// respCh should be empty (TT should NOT go there)
+	select {
+	case resp := <-c.respCh:
+		t.Errorf("respCh unexpectedly got %q", resp)
+	case <-time.After(100 * time.Millisecond):
+		// Good — nothing on respCh
+	}
 }
 
 func TestRelay(t *testing.T) {
