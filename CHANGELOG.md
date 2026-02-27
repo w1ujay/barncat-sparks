@@ -15,8 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-device MIDI support — configure multiple MIDI devices simultaneously (e.g., DJ2GO2 + HaliKey), all sharing the same mapping dispatch
 - RF-Kit amplifier HTTP proxy on RadioServer port — multiplexes HTTP and CAT on the same TCP connection by peeking at the first bytes of each connection
 - Amplifier URL configuration field in web UI and `sparks-config.json` (`amp_url`)
+- DJ2GO2 MIDI control name registry (`internal/config/controls.go`) — maps MIDI type/channel/number to physical control names (Jog Wheel, Play, Hot Cue, etc.)
+- Control names shown in mapping cards (e.g., "VFO Tune — Jog Wheel A") so mappings are identifiable at a glance
 
 ### Changed
+- MIDI device selector changed from add/remove dropdowns to checkboxes of available devices — check which devices to connect, uncheck to skip
 - RadioServer HTTP routing refactored from single handler to `http.ServeMux` with `Handle()` method for registering multiple HTTP handlers on the same port
 
 ## [0.2.1] - 2026-02-26

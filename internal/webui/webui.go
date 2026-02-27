@@ -71,6 +71,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/serial-ports", w.handleSerialPorts)
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
+	mux.HandleFunc("/api/control-names", w.handleControlNames)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
@@ -288,8 +289,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start MIDI if device selected
-	if w.config.MIDIDevice != "" {
+	// Start MIDI if any device selected
+	if len(w.config.GetMIDIDevices()) > 0 {
 		midiCfg := w.config.ToMIDIConfig()
 		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
 		go func() {
@@ -324,8 +325,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	if w.config.SerialPort != "" {
 		status += fmt.Sprintf(", WinKeyer: %s", w.config.SerialPort)
 	}
-	if w.config.MIDIDevice != "" {
-		status += fmt.Sprintf(", MIDI: %s", w.config.MIDIDevice)
+	if devs := w.config.GetMIDIDevices(); len(devs) > 0 {
+		status += fmt.Sprintf(", MIDI: %s", strings.Join(devs, ", "))
 	}
 	w.statusMsg = status
 
@@ -445,6 +446,10 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 		actions[i] = a
 	}
 	writeJSON(rw, actions)
+}
+
+func (w *WebUI) handleControlNames(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, config.ControlMaps)
 }
 
 func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
