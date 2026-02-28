@@ -178,9 +178,8 @@ func TestRTTYAdminEnable(t *testing.T) {
 		t.Fatal("rttyEnabled should be true after admin 0x13 with bit 7 set")
 	}
 
-	// Should send MD6 then DT2 to set DATA/FSK-D mode
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
+	// Admin 0x13 sets internal state only — no MD6/DT2 sent (N1MM manages radio mode)
+	_ = cmds
 }
 
 func TestRTTYAdminDisable(t *testing.T) {
@@ -191,8 +190,6 @@ func TestRTTYAdminDisable(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	// Disable: P1 bit 7 clear
 	wk.processByte(0x00)
@@ -208,8 +205,8 @@ func TestRTTYAdminDisable(t *testing.T) {
 		t.Fatal("rttyEnabled should be false after admin 0x13 with bit 7 clear")
 	}
 
-	// Should send MD3 to return to CW
-	expectCmd(t, cmds, "MD3")
+	// No MD3 sent — N1MM manages radio mode, not the WinKeyer emulator
+	_ = cmds
 }
 
 func TestRTTYAdminConfigBits(t *testing.T) {
@@ -222,9 +219,7 @@ func TestRTTYAdminConfigBits(t *testing.T) {
 	wk.processByte(0xD2) // 1101_0010
 	wk.processByte(0x00)
 
-	// Drain CAT commands
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
+	_ = cmds // no CAT commands sent — admin 0x13 is internal state only
 
 	wk.mu.Lock()
 	diddle := wk.rttyDiddle
@@ -251,8 +246,6 @@ func TestRTTYBracketFlow(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	// Drain echo bytes from enable
 	drainPort(tp, 100*time.Millisecond)
@@ -268,9 +261,8 @@ func TestRTTYBracketFlow(t *testing.T) {
 
 	wk.processByte(']')
 
-	// Should flush "TEST" via KY, then send EOT, then RX
+	// Should flush "TEST" via KY, then RX after txDelay (no EOT — we control PTT)
 	expectCmd(t, cmds, "KY TEST")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second) // PTT off after txDelay
 }
 
@@ -282,9 +274,6 @@ func TestRTTYAbort(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Start bracket, type some text, then abort
@@ -321,9 +310,6 @@ func TestRTTYSpecialChars(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Test } (CR/LF) inside bracket
@@ -338,7 +324,6 @@ func TestRTTYSpecialChars(t *testing.T) {
 
 	// Should contain "HI\r\n"
 	expectCmd(t, cmds, "KY HI\r\n")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
@@ -350,21 +335,21 @@ func TestRTTYTestPattern(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Test { (RYRYRY) inside bracket
 	wk.processByte('[')
 	expectCmd(t, cmds, "TX")
 
-	wk.processByte('{') // RYRYRY pattern — triggers immediate flush
+	wk.processByte('{') // RYRYRY pattern — buffered, flushed on ]
+	wk.processByte(']')
 
+	// All text flushed as single KY on close bracket
 	expectCmd(t, cmds, "KY RYRYRYRYRY")
+	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
-func TestRTTYChunkSplitting(t *testing.T) {
+func TestRTTYLongText(t *testing.T) {
 	wk, tp, cmds := newTestWK(t)
 
 	// Enable RTTY
@@ -372,29 +357,22 @@ func TestRTTYChunkSplitting(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
 	expectCmd(t, cmds, "TX")
 
-	// Send 30 chars — should auto-flush at 24
-	for i := 0; i < 30; i++ {
+	// Send 30 chars — all buffered until ]
+	for i := range 30 {
 		wk.processByte(byte('A' + (i % 26)))
 	}
 
-	// First chunk: 24 chars
-	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWX")
-
 	wk.processByte(']')
 
-	// Remaining 6 chars flush on close bracket
-	expectCmd(t, cmds, "KY YZABCD")
-	expectCmd(t, cmds, "KY |")
-	// RX is delayed by rttyTxDelay (accounts for Baudot transmission time)
-	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
+	// All 30 chars flushed as single KY (no chunking — K4 drops back-to-back KYs)
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXYZABCD")
+	// RX is delayed by rttyTxDelay (30 chars at 45.45 baud ≈ 6s + 1s padding)
+	expectCmdTimeout(t, cmds, "RX", 10*time.Second)
 }
 
 func TestRTTYUppercase(t *testing.T) {
@@ -405,9 +383,6 @@ func TestRTTYUppercase(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
@@ -420,7 +395,6 @@ func TestRTTYUppercase(t *testing.T) {
 	wk.processByte(']')
 
 	expectCmd(t, cmds, "KY HI")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
@@ -432,9 +406,6 @@ func TestRTTYCWStillWorksOutsideBrackets(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Set high WPM for fast echo
@@ -458,9 +429,6 @@ func TestRTTYResetClearsState(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
@@ -472,8 +440,7 @@ func TestRTTYResetClearsState(t *testing.T) {
 	wk.processByte(0x00)
 	wk.processByte(0x01) // reset
 
-	// Reset should send MD3 (back to CW) and RX (PTT off from clearBuffer)
-	expectCmd(t, cmds, "MD3")
+	// Reset should send RX (PTT off) — no MD3, N1MM manages radio mode
 	expectCmd(t, cmds, "RX")
 
 	wk.mu.Lock()
@@ -490,16 +457,13 @@ func TestRTTYResetClearsState(t *testing.T) {
 }
 
 func TestRTTYEcho(t *testing.T) {
-	wk, tp, cmds := newTestWK(t)
+	wk, tp, _ := newTestWK(t)
 
 	// Enable RTTY
 	wk.processByte(0x00)
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Verify serial echo is on (mode register bit 2)
@@ -531,12 +495,11 @@ func TestIsRTTY(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	if !wk.IsRTTY() {
 		t.Error("IsRTTY() should be true after FSK enable")
 	}
+	_ = cmds
 }
 
 // drainPort reads and discards bytes from the test port until timeout.

@@ -206,13 +206,12 @@ func TestSendRTTYText(t *testing.T) {
 	expectCmd(t, cmds, "KY TEST DE W1AW")
 }
 
-func TestSendRTTYTextChunking(t *testing.T) {
+func TestSendRTTYTextLong(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
-	// 30 chars should split into 24 + 6
+	// 30 chars sent as single KY (no chunking — K4 drops back-to-back KYs)
 	c.SendRTTYText("ABCDEFGHIJKLMNOPQRSTUVWXABCDEF")
-	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWX")
-	expectCmd(t, cmds, "KY ABCDEF")
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXABCDEF")
 }
 
 func TestSendRTTYEOT(t *testing.T) {

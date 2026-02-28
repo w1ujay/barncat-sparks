@@ -537,22 +537,14 @@ func (c *CATClient) SetCWMode() error {
 	return c.Send("MD3;")
 }
 
-// SendRTTYText sends RTTY text via KY commands in 24-char chunks.
+// SendRTTYText sends RTTY text via a single KY command.
 // In FSK-D mode the K4 encodes the ASCII text as Baudot.
+// The text is sent unchunked — the K4 drops back-to-back KY commands
+// because its internal buffer can only accept one at a time.
 func (c *CATClient) SendRTTYText(text string) error {
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > 24 {
-			chunk = chunk[:24]
-		}
-		text = text[len(chunk):]
-		cmd := fmt.Sprintf("KY %s;", chunk)
-		log.Printf("CAT: %s", cmd)
-		if err := c.Send(cmd); err != nil {
-			return err
-		}
-	}
-	return nil
+	cmd := fmt.Sprintf("KY %s;", text)
+	log.Printf("CAT: %s", cmd)
+	return c.Send(cmd)
 }
 
 // SendRTTYEOT sends the end-of-transmission marker for RTTY.

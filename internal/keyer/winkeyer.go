@@ -80,6 +80,7 @@ type Winkeyer struct {
 	rttyAutoCRLF   bool               // auto CR/LF at end of transmission
 	rttyBaudRate   int                // 0=45.45, 1=50, 2=75, 3=100 baud
 	rttyDoneCancel context.CancelFunc // cancels the pending ] goroutine (PTT off)
+	rttyPTTActive  bool               // TX; sent, RX; not yet sent
 
 	// Protocol trace (verbose logging)
 	trace bool
@@ -269,23 +270,18 @@ func (w *Winkeyer) execAdmin() {
 	switch w.adminCode {
 	case 0x01: // Reset
 		w.hostOpen = false
-		wasRTTY := w.rttyEnabled
 		wasInBracket := w.rttyInBracket
 		w.rttyEnabled = false
 		w.rttyInBracket = false
 		w.rttyBuf = nil
+		w.rttyPTTActive = false
 		if w.rttyDoneCancel != nil {
 			w.rttyDoneCancel()
 			w.rttyDoneCancel = nil
 		}
 		w.clearBuffer()
-		if wasRTTY {
-			go func() {
-				w.cat.SetCWMode()
-				if wasInBracket {
-					w.cat.SetPTT(false)
-				}
-			}()
+		if wasInBracket {
+			go w.cat.SetPTT(false)
 		}
 		log.Printf("WK: admin reset")
 
@@ -297,23 +293,18 @@ func (w *Winkeyer) execAdmin() {
 
 	case 0x03: // Host Close
 		w.hostOpen = false
-		wasRTTY := w.rttyEnabled
 		wasInBracket := w.rttyInBracket
 		w.rttyEnabled = false
 		w.rttyInBracket = false
 		w.rttyBuf = nil
+		w.rttyPTTActive = false
 		if w.rttyDoneCancel != nil {
 			w.rttyDoneCancel()
 			w.rttyDoneCancel = nil
 		}
 		w.clearBuffer()
-		if wasRTTY {
-			go func() {
-				w.cat.SetCWMode()
-				if wasInBracket {
-					w.cat.SetPTT(false)
-				}
-			}()
+		if wasInBracket {
+			go w.cat.SetPTT(false)
 		}
 		log.Printf("WK: host close")
 
@@ -350,7 +341,8 @@ func (w *Winkeyer) execAdmin() {
 	case 0x12: // Set high baud (9600)
 		log.Printf("WK: set 9600 baud (not supported)")
 
-	case 0x13: // FSK mode
+	case 0x13: // FSK mode — controls WinKeyer FSK hardware output, NOT radio mode.
+		// N1MM manages the radio mode itself; sending MD3/MD6 here fights it.
 		if len(w.params) >= 2 {
 			p1 := w.params[0]
 			w.rttyEnabled = p1&0x80 != 0
@@ -359,12 +351,10 @@ func (w *Winkeyer) execAdmin() {
 			w.rttyBaudRate = int(p1 & 0x03)
 			if w.rttyEnabled {
 				log.Printf("WK: FSK mode ON (diddle=%v autoCRLF=%v baud=%d)", w.rttyDiddle, w.rttyAutoCRLF, w.rttyBaudRate)
-				go w.cat.SetDataMode()
 			} else {
 				log.Printf("WK: FSK mode OFF")
 				w.rttyInBracket = false
 				w.rttyBuf = nil
-				go w.cat.SetCWMode()
 			}
 		}
 
@@ -428,11 +418,18 @@ func (w *Winkeyer) execCommand() {
 	case 0x0A: // Clear buffer
 		wasBusy := w.busy
 		wasRTTYBracket := w.rttyInBracket
+		// Cancel any pending ] goroutine (waiting on txDelay before RX)
+		hadPendingRTTY := w.rttyDoneCancel != nil
+		if w.rttyDoneCancel != nil {
+			w.rttyDoneCancel()
+			w.rttyDoneCancel = nil
+		}
 		w.clearBuffer()
 		log.Printf("WK: clear buffer")
-		if wasRTTYBracket {
-			w.cat.SendRTTYEOT()
+		if wasRTTYBracket || hadPendingRTTY {
+			w.cat.SendAbort()
 			w.cat.SetPTT(false)
+			w.rttyPTTActive = false
 		} else if wasBusy {
 			w.cat.SendAbort()
 		}
@@ -759,25 +756,30 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		}
 		w.rttyBuf = w.rttyBuf[:0]
 		w.rttyInBracket = true
-		w.cat.SetPTT(true)
+		if !w.rttyPTTActive {
+			w.cat.SetPTT(true)
+			w.rttyPTTActive = true
+		}
 		if w.trace {
-			log.Printf("WK trace: RTTY [ → PTT on")
+			log.Printf("WK trace: RTTY [ → PTT on (was=%v)", w.rttyPTTActive)
 		}
 
-	case ']': // End TX — flush text + EOT, delayed PTT off (cancellable by next [)
+	case ']': // End TX — flush text, delayed PTT off (cancellable by next [)
 		if w.rttyInBracket {
 			text := w.rttyTakeBuf()
 			w.rttyInBracket = false
 			txDelay := w.rttyTxDelay(len(text))
 			if w.trace {
-				log.Printf("WK trace: RTTY ] → flush %q + EOT + PTT off (wait %v)", text, txDelay)
+				log.Printf("WK trace: RTTY ] → flush %q + PTT off (wait %v)", text, txDelay)
 			}
 			// Send remaining text synchronously for correct wire ordering
 			if text != "" {
 				w.cat.SendRTTYText(text)
 			}
-			// Goroutine: brief coalescing delay → EOT → txDelay → RX
-			// If next [ arrives within 30ms, ctx is cancelled → skip EOT+RX (merge)
+			// Goroutine: coalescing delay → txDelay → RX
+			// If next [ arrives within 30ms, ctx is cancelled → skip RX (merge)
+			// No KY |; (EOT) — we control PTT with RX; after the Baudot delay.
+			// Sending EOT too early causes the K4 to drop TX prematurely.
 			ctx, cancel := context.WithCancel(context.Background())
 			w.rttyDoneCancel = cancel
 			go func() {
@@ -786,10 +788,12 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 				case <-ctx.Done():
 					return
 				}
-				w.cat.SendRTTYEOT()
 				select {
 				case <-time.After(txDelay):
 					w.cat.SetPTT(false)
+					w.mu.Lock()
+					w.rttyPTTActive = false
+					w.mu.Unlock()
 				case <-ctx.Done():
 				}
 			}()
@@ -800,6 +804,7 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		if w.rttyInBracket {
 			w.rttyInBracket = false
 			w.cat.SetPTT(false)
+			w.rttyPTTActive = false
 			if w.trace {
 				log.Printf("WK trace: RTTY \\ → abort, PTT off")
 			}
@@ -808,23 +813,16 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 	case '}': // CR/LF
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, '\r', '\n')
-			if len(w.rttyBuf) >= 24 {
-				w.rttyFlushLocked()
-			}
 		}
 
 	case '{': // RYRYRY test pattern
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, []byte("RYRYRYRYRY")...)
-			w.rttyFlushLocked()
 		}
 
 	default:
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, byte(unicode.ToUpper(rune(b))))
-			if len(w.rttyBuf) >= 24 {
-				w.rttyFlushLocked()
-			}
 		} else {
 			// Outside brackets — pass through to CW buffer
 			w.bufferChar(b)
@@ -846,19 +844,6 @@ func (w *Winkeyer) rttyTakeBuf() string {
 	text := strings.ToUpper(string(w.rttyBuf))
 	w.rttyBuf = w.rttyBuf[:0]
 	return text
-}
-
-// rttyFlushLocked sends accumulated RTTY text in 24-char KY chunks.
-// Must be called with w.mu held.
-func (w *Winkeyer) rttyFlushLocked() {
-	text := w.rttyTakeBuf()
-	if text == "" {
-		return
-	}
-	if w.trace {
-		log.Printf("WK trace: RTTY flush %q (%d chars)", text, len(text))
-	}
-	w.cat.SendRTTYText(text)
 }
 
 // rttyTxDelay estimates how long the K4 needs to transmit n characters of RTTY.
