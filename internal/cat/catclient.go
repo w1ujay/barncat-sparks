@@ -2,6 +2,8 @@ package cat
 
 import (
 	"bufio"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -67,6 +69,45 @@ func (c *CATClient) ConnectSerial(portName string, baud int) error {
 	c.mu.Unlock()
 	go c.readLoop()
 	log.Printf("CAT: connected to %s (serial, %d baud)", portName, baud)
+	return nil
+}
+
+// ConnectK4 connects to a K4 radio on its authenticated TCP port (9205).
+// The password is hashed with SHA-384 and sent as a 96-char hex string.
+func (c *CATClient) ConnectK4(addr, password string) error {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("K4 auth connect: %w", err)
+	}
+
+	// SHA-384 hash the password → 96-char lowercase hex
+	hash := sha512.Sum384([]byte(password))
+	hexHash := hex.EncodeToString(hash[:])
+
+	// Send hash raw on the socket (no framing)
+	if _, err := fmt.Fprint(conn, hexHash); err != nil {
+		conn.Close()
+		return fmt.Errorf("K4 auth send: %w", err)
+	}
+
+	// Read 1 byte — any data back means auth success
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var peek [1]byte
+	n, err := conn.Read(peek[:])
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("K4 auth failed: %w", err)
+	}
+	conn.SetReadDeadline(time.Time{}) // clear deadline
+
+	// Wrap conn to replay the consumed byte
+	wrapped := &prefixConn{Conn: conn, buf: peek[:n]}
+
+	c.mu.Lock()
+	c.transport = wrapped
+	c.mu.Unlock()
+	go c.readLoop()
+	log.Printf("CAT: connected to %s (K4 auth)", addr)
 	return nil
 }
 

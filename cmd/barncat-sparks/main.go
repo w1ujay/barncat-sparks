@@ -45,6 +45,7 @@ func main() {
 	catTransport := flag.String("cat-transport", "", "CAT transport: tcp or serial")
 	catSerialPort := flag.String("cat-serial", "", "Serial port for radio CAT (e.g., COM3)")
 	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
+	catPassword := flag.String("cat-password", "", "K4 authentication password (for port 9205)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
 	radioListen := flag.String("radio-listen", "", "TCP listen address for RadioServer (e.g., :9400)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
@@ -78,7 +79,7 @@ func main() {
 	// If CLI flags specify port or midi, run headless (backwards compatible)
 	if *portName != "" || *midiDevice != "" || *noGUI {
 		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
-			*catTransport, *catSerialPort, *catBaud, *catListen, *radioListen)
+			*catTransport, *catSerialPort, *catBaud, *catPassword, *catListen, *radioListen)
 		return
 	}
 
@@ -87,7 +88,7 @@ func main() {
 }
 
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
-	catTransport, catSerialPort string, catBaud int, catListen, radioListen string) {
+	catTransport, catSerialPort string, catBaud int, catPassword string, catListen, radioListen string) {
 	// Load config for defaults if CLI flags are sparse
 	cfg, _ := config.LoadAppConfig(cfgPath)
 	if cfg == nil {
@@ -112,6 +113,9 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 	if catBaud == 0 {
 		catBaud = 38400
+	}
+	if catPassword == "" {
+		catPassword = cfg.CATPassword
 	}
 	if catListen == "" {
 		catListen = cfg.CATListen
@@ -141,6 +145,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		fmt.Fprintln(os.Stderr, "  -cat-transport  CAT transport: tcp or serial (default: tcp)")
 		fmt.Fprintln(os.Stderr, "  -cat-serial     Serial port for radio CAT (e.g., COM3)")
 		fmt.Fprintln(os.Stderr, "  -cat-baud       Baud rate for serial CAT (default: 38400)")
+		fmt.Fprintln(os.Stderr, "  -cat-password   K4 authentication password (for port 9205)")
 		fmt.Fprintln(os.Stderr, "  -cat-listen     TCP listen address for CAT server (e.g., :9300)")
 		fmt.Fprintln(os.Stderr, "  -radio-listen   TCP listen address for RadioServer (e.g., :9400)")
 		fmt.Fprintln(os.Stderr, "  -speed          Initial keyer speed in WPM (default: 25)")
@@ -170,9 +175,16 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 			log.Fatalf("Failed to connect to radio: %v", err)
 		}
 	default:
-		log.Printf("  CAT: %s (TCP)", catAddr)
-		if err := c.ConnectTCP(catAddr); err != nil {
-			log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+		if catPassword != "" {
+			log.Printf("  CAT: %s (K4 auth)", catAddr)
+			if err := c.ConnectK4(catAddr, catPassword); err != nil {
+				log.Fatalf("K4 auth failed for %s: %v", catAddr, err)
+			}
+		} else {
+			log.Printf("  CAT: %s (TCP)", catAddr)
+			if err := c.ConnectTCP(catAddr); err != nil {
+				log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+			}
 		}
 	}
 	defer c.Close()

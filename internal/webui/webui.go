@@ -210,11 +210,20 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		w.statusMsg = "Connecting to radio via TCP..."
-		if err := client.ConnectTCP(w.config.CATAddress); err != nil {
-			w.statusMsg = fmt.Sprintf("CAT TCP error: %v", err)
-			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
-			return
+		if w.config.CATPassword != "" {
+			w.statusMsg = "Connecting to radio via K4 auth..."
+			if err := client.ConnectK4(w.config.CATAddress, w.config.CATPassword); err != nil {
+				w.statusMsg = fmt.Sprintf("K4 auth error: %v", err)
+				writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
+				return
+			}
+		} else {
+			w.statusMsg = "Connecting to radio via TCP..."
+			if err := client.ConnectTCP(w.config.CATAddress); err != nil {
+				w.statusMsg = fmt.Sprintf("CAT TCP error: %v", err)
+				writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
+				return
+			}
 		}
 	}
 	w.cat = client
@@ -308,7 +317,11 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	case "serial":
 		status = fmt.Sprintf("Running — Radio: %s (%d baud)", w.config.CATSerialPort, w.config.CATSerialBaud)
 	default:
-		status = fmt.Sprintf("Running — Radio: %s (TCP)", w.config.CATAddress)
+		if w.config.CATPassword != "" {
+			status = fmt.Sprintf("Running — Radio: %s (K4 auth)", w.config.CATAddress)
+		} else {
+			status = fmt.Sprintf("Running — Radio: %s (TCP)", w.config.CATAddress)
+		}
 	}
 	if w.config.CATListen != "" {
 		status += fmt.Sprintf(", Server: %s", w.config.CATListen)

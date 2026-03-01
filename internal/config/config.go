@@ -16,6 +16,7 @@ type AppConfig struct {
 	CATTransport  string         `json:"cat_transport"`
 	CATSerialPort string         `json:"cat_serial_port"`
 	CATSerialBaud int            `json:"cat_serial_baud"`
+	CATPassword   string         `json:"cat_password,omitempty"`
 	CATListen          string         `json:"cat_listen"`
 	RadioServerListen  string         `json:"radio_server_listen"`
 	AmpURL             string         `json:"amp_url"`
