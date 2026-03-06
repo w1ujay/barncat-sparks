@@ -25,6 +25,8 @@ type AppConfig struct {
 	MIDIDevice    string         `json:"midi_device,omitempty"`
 	MIDIDevices   []string       `json:"midi_devices,omitempty"`
 	PaddleSwap     bool           `json:"paddle_swap"`
+	QK4Volume      bool           `json:"qk4_volume,omitempty"`
+	QK4Address     string         `json:"qk4_address,omitempty"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
 	Mappings       []MappingEntry `json:"mappings"`

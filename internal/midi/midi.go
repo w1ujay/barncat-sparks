@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/ujay/barncat-sparks/internal/cat"
 )
 
 // MIDIConfig holds the MIDI controller configuration.
@@ -47,6 +49,20 @@ func LoadMIDIConfig(path string) (*MIDIConfig, error) {
 		return nil, fmt.Errorf("parse MIDI config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// SetVolumeCat sets an alternative Radio target for volume commands.
+// When set, volume/volume_b actions are sent here instead of the main radio.
+func (d *MIDIDriver) SetVolumeCat(r cat.Radio) {
+	d.volumeCat = r
+}
+
+// volumeTarget returns the Radio to use for volume commands.
+func (d *MIDIDriver) volumeTarget() cat.Radio {
+	if d.volumeCat != nil {
+		return d.volumeCat
+	}
+	return d.cat
 }
 
 // midiKey uniquely identifies a MIDI event for fast lookup.
@@ -191,11 +207,11 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 
 	case "volume":
 		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetVolume(0, level)
+		go d.volumeTarget().SetVolume(0, level)
 
 	case "volume_b":
 		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetVolume(1, level)
+		go d.volumeTarget().SetVolume(1, level)
 
 	case "rf_gain":
 		level := ccValue(value, 60, m.Opts)

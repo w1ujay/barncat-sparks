@@ -25,6 +25,7 @@ type MIDIDriver struct {
 	mu        sync.Mutex
 	closeOnce sync.Once
 	cat       cat.Radio
+	volumeCat cat.Radio // optional: route volume commands here (e.g. QK4)
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool

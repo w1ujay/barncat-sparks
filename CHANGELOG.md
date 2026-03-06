@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Amplifier URL configuration field in web UI and `sparks-config.json` (`amp_url`)
 - DJ2GO2 MIDI control name registry (`internal/config/controls.go`) — maps MIDI type/channel/number to physical control names (Jog Wheel, Play, Hot Cue, etc.)
 - Control names shown in mapping cards (e.g., "VFO Tune — Jog Wheel A") so mappings are identifiable at a glance
+- QK4 volume routing — optional checkbox to route MIDI volume commands to a local QK4 instance instead of the direct K4 connection, with configurable address (default `127.0.0.1:9299`)
 
 ### Changed
 - MIDI device selector changed from add/remove dropdowns to checkboxes of available devices — check which devices to connect, uncheck to skip

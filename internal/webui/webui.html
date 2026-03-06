@@ -160,6 +160,10 @@ details summary:hover{color:#569cd6}
 <h2>Options</h2>
 <div>
   <label><input type="checkbox" id="paddleSwap"> Swap dit/dah paddles</label>
+  <label><input type="checkbox" id="qk4Volume" onchange="toggleQK4Addr()"> Route MIDI volume to QK4</label>
+  <span id="qk4AddrWrap" style="display:none">
+    <input type="text" id="qk4Address" placeholder="127.0.0.1:9299" size="20">
+  </span>
   <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
   <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
 </div>
@@ -218,6 +222,9 @@ async function init() {
   document.getElementById('tcpMode').value = cfg.cat_password ? 'k4auth' : 'plain';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
   document.getElementById('paddleSwap').checked = cfg.paddle_swap || false;
+  document.getElementById('qk4Volume').checked = cfg.qk4_volume || false;
+  document.getElementById('qk4Address').value = cfg.qk4_address || '';
+  toggleQK4Addr();
   document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
   document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
@@ -417,6 +424,11 @@ function onTcpModeChange() {
   document.getElementById('catAddr').placeholder = isAuth ? 'k4-hostname:9205' : 'localhost:9299';
 }
 
+function toggleQK4Addr() {
+  const on = document.getElementById('qk4Volume').checked;
+  document.getElementById('qk4AddrWrap').style.display = on ? '' : 'none';
+}
+
 async function onTraceChange() {
   const enabled = document.getElementById('protocolTrace').checked;
   try {
@@ -444,6 +456,8 @@ function gatherConfig() {
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_devices: midiDevices.filter(d => d !== ''),
     paddle_swap: document.getElementById('paddleSwap').checked,
+    qk4_volume: document.getElementById('qk4Volume').checked,
+    qk4_address: document.getElementById('qk4Address').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
     protocol_trace: document.getElementById('protocolTrace').checked,
     mappings: mappings.map(m => ({

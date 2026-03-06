@@ -31,9 +31,10 @@ type WebUI struct {
 	cfgPath   string
 	running   bool
 	statusMsg string
-	cat       cat.Radio
-	wk        *keyer.Winkeyer
-	midiDrv   *midi.MIDIDriver
+	cat          cat.Radio
+	qk4VolumeCat *cat.CATClient // optional QK4 connection for volume routing
+	wk           *keyer.Winkeyer
+	midiDrv      *midi.MIDIDriver
 	catServer   *cat.CATServer
 	radioServer *cat.RadioServer
 	lp100       *lp100a.Driver
@@ -302,6 +303,23 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	if len(w.config.GetMIDIDevices()) > 0 {
 		midiCfg := w.config.ToMIDIConfig()
 		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
+
+		// Route volume commands to QK4 if enabled
+		if w.config.QK4Volume {
+			addr := w.config.QK4Address
+			if addr == "" {
+				addr = "127.0.0.1:9299"
+			}
+			qk4 := cat.NewCATClient()
+			if err := qk4.ConnectTCP(addr); err != nil {
+				log.Printf("QK4 volume route: %v (volume will use main radio)", err)
+			} else {
+				w.qk4VolumeCat = qk4
+				w.midiDrv.SetVolumeCat(qk4)
+				log.Printf("QK4 volume route: connected to %s", addr)
+			}
+		}
+
 		go func() {
 			if err := w.midiDrv.Run(); err != nil {
 				w.mu.Lock()
@@ -378,6 +396,10 @@ func (w *WebUI) stopLocked() {
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
 		w.midiDrv = nil
+	}
+	if w.qk4VolumeCat != nil {
+		w.qk4VolumeCat.Close()
+		w.qk4VolumeCat = nil
 	}
 	if w.wk != nil {
 		w.wk.Close()
