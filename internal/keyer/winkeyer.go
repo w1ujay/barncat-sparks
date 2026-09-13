@@ -479,7 +479,9 @@ func (w *Winkeyer) execCommand() {
 		if len(w.params) > 0 {
 			w.tuning = w.params[0] != 0
 			log.Printf("WK: key immediate = %v", w.tuning)
-			go w.cat.SetPTT(w.tuning)
+			// Synchronous under mu (not a goroutine), so tune on and tune off
+			// reach the radio in the order the host sent them.
+			w.cat.SetPTT(w.tuning)
 			w.sendStatusLocked()
 		}
 
