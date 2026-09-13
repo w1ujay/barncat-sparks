@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 
 	"github.com/ujay/barncat-sparks/internal/hearth"
@@ -16,6 +17,19 @@ type hearthResult struct {
 	Queued bool   `json:"queued,omitempty"`
 	Error  string `json:"error,omitempty"`
 	Status int    `json:"status,omitempty"`
+}
+
+// requireJSONContentType rejects a POST whose media type is not
+// application/json (charset and other parameters are fine), so a cross-site
+// "simple" request (text/plain, no CORS preflight) can't reach hearth with a
+// forwarded token. It writes the 415 response itself when rejecting.
+func requireJSONContentType(rw http.ResponseWriter, r *http.Request) bool {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mt != "application/json" {
+		http.Error(rw, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
 }
 
 func hearthFailure(err error) hearthResult {
@@ -54,6 +68,9 @@ func (w *WebUI) handleHearthTest(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !requireJSONContentType(rw, r) {
+		return
+	}
 	var req struct {
 		URL        string `json:"url"`
 		ReplicaURL string `json:"replica_url"`
@@ -76,6 +93,9 @@ func (w *WebUI) handleHearthTest(rw http.ResponseWriter, r *http.Request) {
 func (w *WebUI) handleHearthK4(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requireJSONContentType(rw, r) {
 		return
 	}
 	var req struct {
@@ -101,6 +121,9 @@ func (w *WebUI) handleHearthK4(rw http.ResponseWriter, r *http.Request) {
 func (w *WebUI) handleHearthPowerSave(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requireJSONContentType(rw, r) {
 		return
 	}
 	var req struct {

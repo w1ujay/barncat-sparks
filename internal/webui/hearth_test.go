@@ -30,10 +30,16 @@ func hearthWebUI(cfg *config.AppConfig) *WebUI {
 }
 
 // callJSON invokes handler with body and decodes the JSON response into a map.
+// POST requests get a Content-Type: application/json header, as the real
+// page's fetch() calls always send.
 func callJSON(t *testing.T, handler http.HandlerFunc, method, body string) (int, map[string]any) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	handler(rec, httptest.NewRequest(method, "/", strings.NewReader(body)))
+	req := httptest.NewRequest(method, "/", strings.NewReader(body))
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	handler(rec, req)
 	out := map[string]any{}
 	if strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
 		if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
@@ -139,6 +145,39 @@ func TestHearthPowerSaveRequiresArmed(t *testing.T) {
 	code, _ := callJSON(t, w.handleHearthPowerSave, http.MethodPost, `{}`)
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
+	}
+}
+
+// TestHearthPostRoutesRejectNonJSONContentType guards against a cross-site
+// "simple" request: any page in the operator's browser can POST
+// text/plain (no CORS preflight) and have it land as if it were JSON. The
+// three hearth POST handlers must reject a non-application/json body before
+// decoding it or contacting hearth at all.
+func TestHearthPostRoutesRejectNonJSONContentType(t *testing.T) {
+	dead := "http://" + freeAddr(t)
+	w := hearthWebUI(&config.AppConfig{HearthURL: dead})
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		body    string
+	}{
+		{"test", w.handleHearthTest, `{"url":"` + dead + `"}`},
+		{"k4", w.handleHearthK4, `{"power":"on"}`},
+		{"powersave", w.handleHearthPowerSave, `{"armed":true}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(c.body))
+			req.Header.Set("Content-Type", "text/plain")
+			c.handler(rec, req)
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d, want 415", rec.Code)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != "Content-Type must be application/json" {
+				t.Errorf("body = %q, want %q", got, "Content-Type must be application/json")
+			}
+		})
 	}
 }
 
