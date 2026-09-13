@@ -50,6 +50,7 @@ func (w *WebUI) hearthClient() *hearth.Client {
 		PiURL:      w.config.HearthURL,
 		ReplicaURL: w.config.HearthReplicaURL,
 		Token:      w.config.HearthToken,
+		Site:       w.config.HearthSite,
 	}
 }
 

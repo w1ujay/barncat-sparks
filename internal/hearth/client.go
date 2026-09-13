@@ -76,6 +76,7 @@ type Client struct {
 	PiURL      string
 	ReplicaURL string
 	Token      string
+	Site       string // hub site name sent as ?site= on status and power-save calls; empty sends none
 	HTTP       *http.Client
 }
 
