@@ -580,3 +580,99 @@ func TestN1MMMessageStartNoSpuriousIdle(t *testing.T) {
 	expectCmd(t, cmds, "KS023")
 	expectCmd(t, cmds, "KY ?")
 }
+
+// --- Shutdown and Buffer Lifecycle Tests ---
+
+// drainCmds discards CAT commands until none arrive for quiet.
+func drainCmds(cmds chan string, quiet time.Duration) {
+	for {
+		select {
+		case <-cmds:
+		case <-time.After(quiet):
+			return
+		}
+	}
+}
+
+// TestCloseReleasesRTTYPTT: stopping Sparks mid-transmission must not leave
+// the radio keyed.
+func TestCloseReleasesRTTYPTT(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.processByte(0x00)
+	wk.processByte(0x13)
+	wk.processByte(0x80)
+	wk.processByte(0x00)
+	drainPort(tp, 100*time.Millisecond)
+
+	wk.processByte('[')
+	expectCmd(t, cmds, "TX")
+
+	wk.Close()
+	expectCmd(t, cmds, "RX")
+}
+
+// TestCloseAbortsCWInProgress: text already handed to the K4 keeps keying
+// after Stop unless the keyer aborts it.
+func TestCloseAbortsCWInProgress(t *testing.T) {
+	wk, _, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 5
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	expectCmd(t, cmds, "KY E")
+
+	wk.Close()
+	expectCmd(t, cmds, "RX")
+}
+
+// TestCloseWhenIdleSendsNothing: an idle Stop must not unkey a transmission
+// the operator started some other way.
+func TestCloseWhenIdleSendsNothing(t *testing.T) {
+	wk, _, cmds := newTestWK(t)
+
+	wk.Close()
+
+	select {
+	case cmd := <-cmds:
+		t.Fatalf("idle Close sent %q", cmd)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestBufferReclaimedAfterDrain: the 64-byte buffer is reused once its
+// contents have been sent, so CW does not stop after 64 characters.
+func TestBufferReclaimedAfterDrain(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 1200 // ~1ms dits so a full buffer drains quickly
+	wk.mu.Unlock()
+
+	for i := 0; i < BufferSize; i++ {
+		wk.processByte('E')
+	}
+	waitIdle(t, tp)
+	drainCmds(cmds, 200*time.Millisecond)
+
+	wk.processByte('T')
+	expectCmd(t, cmds, "KY T")
+}
+
+// TestPointerResetAfterDrainSendsNewText: a pointer reset (0x16 0x00) with no
+// clear buffer, after the previous message drained, starts a fresh message.
+func TestPointerResetAfterDrainSendsNewText(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 1200
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	wk.processByte('E')
+	waitIdle(t, tp)
+	drainCmds(cmds, 200*time.Millisecond)
+
+	wk.processByte(0x16)
+	wk.processByte(0x00)
+	wk.processByte('T')
+	expectCmd(t, cmds, "KY T")
+}

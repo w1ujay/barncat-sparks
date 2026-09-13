@@ -121,10 +121,34 @@ func (w *Winkeyer) OpenSerial(portName string) error {
 	return nil
 }
 
+// Close stops the keyer and closes the serial port. Anything still keying the
+// radio is released first: CW already handed to the radio is aborted, and an
+// active or pending RTTY transmission or tune carrier gets PTT off. An idle
+// keyer sends nothing, so Stop never unkeys a transmission started elsewhere.
 func (w *Winkeyer) Close() {
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
 	w.closed = true
+	abortCW := w.busy
+	releasePTT := w.rttyPTTActive || w.rttyInBracket || w.rttyDoneCancel != nil || w.tuning
+	if w.rttyDoneCancel != nil {
+		w.rttyDoneCancel()
+		w.rttyDoneCancel = nil
+	}
+	w.clearBuffer() // stops the sendLoop
+	w.rttyPTTActive = false
+	w.tuning = false
 	w.mu.Unlock()
+
+	if abortCW {
+		w.cat.SendAbort()
+	}
+	if releasePTT {
+		w.cat.SetPTT(false)
+	}
 	if w.port != nil {
 		w.port.Close()
 	}
@@ -487,6 +511,7 @@ func (w *Winkeyer) execCommand() {
 		}
 		switch sub {
 		case 0x00: // Reset buffer pointer to start
+			w.reclaimDrainedBuffer()
 			w.writePos = 0
 		case 0x01: // Move pointer to position (overwrite mode)
 			pos := int(w.params[1])
@@ -564,12 +589,26 @@ func (w *Winkeyer) execCommand() {
 	}
 }
 
+// reclaimDrainedBuffer rewinds the buffer to position 0 once everything
+// written has been sent, so the 64 bytes are reused instead of filling up for
+// good. It only rewinds when nothing is sending, nothing is left to send, and
+// writePos is at the end — a pointer command parked mid-buffer for a late
+// overwrite must not make stale characters send again.
+// Must be called with w.mu held.
+func (w *Winkeyer) reclaimDrainedBuffer() {
+	if w.busy || w.readPos < w.bufLen || w.writePos != w.bufLen {
+		return
+	}
+	w.bufLen, w.readPos, w.writePos = 0, 0, 0
+}
+
 // bufferChar adds a character to the CW buffer and triggers sending.
 // Writes at the current writePos (set by pointer commands).
 // Must be called with w.mu held.
 func (w *Winkeyer) bufferChar(ch byte) {
 	ch = byte(unicode.ToUpper(rune(ch)))
 
+	w.reclaimDrainedBuffer()
 	if w.writePos >= BufferSize {
 		return // Buffer full, drop character
 	}
