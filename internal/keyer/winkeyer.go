@@ -854,12 +854,22 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 				}
 				select {
 				case <-time.After(txDelay):
-					w.cat.SetPTT(false)
-					w.mu.Lock()
-					w.rttyPTTActive = false
-					w.mu.Unlock()
 				case <-ctx.Done():
+					return
 				}
+				// Re-check under mu: a '[' or clear that cancelled this worker
+				// while its timer fired owns the PTT state now. Otherwise this
+				// transmission is done — release PTT and clear the pending
+				// state, so Close and clear buffer don't send a stray RX.
+				w.mu.Lock()
+				defer w.mu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+				w.cat.SetPTT(false)
+				w.rttyPTTActive = false
+				w.rttyDoneCancel = nil
+				cancel()
 			}()
 		}
 
