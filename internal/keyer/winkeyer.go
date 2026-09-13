@@ -72,6 +72,12 @@ type Winkeyer struct {
 	writeMu sync.Mutex
 	closed  bool
 
+	// sendMu makes sendLoop's cancel check and its KY one step, and abort
+	// paths take it before SendAbort: a KY either reaches the radio before the
+	// abort or not at all. Lock order: mu → sendMu; sendLoop never takes mu
+	// while holding sendMu.
+	sendMu sync.Mutex
+
 	// RTTY state (FSK mode via admin 0x13)
 	rttyEnabled    bool               // FSK mode active
 	rttyInBracket  bool               // inside [...] text block (TX active)
@@ -144,7 +150,11 @@ func (w *Winkeyer) Close() {
 	w.mu.Unlock()
 
 	if abortCW {
+		// sendLoop may already be past its cancel check with a KY in hand;
+		// sendMu makes the abort follow that KY instead of preceding it.
+		w.sendMu.Lock()
 		w.cat.SendAbort()
+		w.sendMu.Unlock()
 	}
 	if releasePTT {
 		w.cat.SetPTT(false)
@@ -723,15 +733,19 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		w.updateXoff()
 		w.mu.Unlock()
 
-		// Check cancel before sending — abort should prevent new KY
+		// Check cancel and send under sendMu, so an abort can't slip in
+		// between: the KY reaches the radio before the abort or not at all.
+		w.sendMu.Lock()
 		select {
 		case <-cancel:
+			w.sendMu.Unlock()
 			return
 		default:
 		}
 
 		// Send KY command to K4 — K4 break-in handles PTT automatically
 		w.cat.SendKY(string(chunk))
+		w.sendMu.Unlock()
 		if w.trace {
 			log.Printf("WK trace: KY \"%s\" (%d chars)", string(chunk), len(chunk))
 		}
