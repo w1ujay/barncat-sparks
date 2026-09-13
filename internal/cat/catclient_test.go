@@ -3,7 +3,6 @@ package cat
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"net"
 	"testing"
@@ -303,8 +302,9 @@ func TestRelay(t *testing.T) {
 	})
 	c := connectClient(t, ln)
 
-	// Set up two relay buffers (simulating two TCP clients)
-	var buf1, buf2 bytes.Buffer
+	// Set up two relay buffers (simulating two TCP clients). Relays are written
+	// from their own goroutines, so the buffers must be safe to read here.
+	var buf1, buf2 syncBuffer
 	c.AddRelay(&buf1)
 	c.AddRelay(&buf2)
 
