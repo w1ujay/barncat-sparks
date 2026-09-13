@@ -138,27 +138,10 @@ func (w *Winkeyer) Close() {
 		return
 	}
 	w.closed = true
-	abortCW := w.busy
-	releasePTT := w.rttyPTTActive || w.rttyInBracket || w.rttyDoneCancel != nil || w.tuning
-	if w.rttyDoneCancel != nil {
-		w.rttyDoneCancel()
-		w.rttyDoneCancel = nil
-	}
-	w.clearBuffer() // stops the sendLoop
-	w.rttyPTTActive = false
-	w.tuning = false
+	stop, _ := w.stopKeyingLocked()
 	w.mu.Unlock()
 
-	if abortCW {
-		// sendLoop may already be past its cancel check with a KY in hand;
-		// sendMu makes the abort follow that KY instead of preceding it.
-		w.sendMu.Lock()
-		w.cat.SendAbort()
-		w.sendMu.Unlock()
-	}
-	if releasePTT {
-		w.cat.SetPTT(false)
-	}
+	w.sendStop(stop)
 	if w.port != nil {
 		w.port.Close()
 	}
@@ -450,30 +433,13 @@ func (w *Winkeyer) execCommand() {
 		// Ignored
 
 	case 0x0A: // Clear buffer
-		wasBusy := w.busy
-		wasRTTYBracket := w.rttyInBracket
-		// Cancel any pending ] goroutine (waiting on txDelay before RX)
-		hadPendingRTTY := w.rttyDoneCancel != nil
-		if w.rttyDoneCancel != nil {
-			w.rttyDoneCancel()
-			w.rttyDoneCancel = nil
-		}
-		if w.clearBuffer() {
+		// Stops CW, an RTTY bracket or its pending ] release, and a tune carrier.
+		stop, statusChanged := w.stopKeyingLocked()
+		if statusChanged {
 			w.sendStatusLocked()
 		}
 		log.Printf("WK: clear buffer")
-		// sendLoop may already be past its cancel check with a KY in hand;
-		// sendMu makes the abort follow that KY instead of preceding it.
-		// Holding mu here is fine: sendLoop never takes mu while holding sendMu.
-		w.sendMu.Lock()
-		if wasRTTYBracket || hadPendingRTTY {
-			w.cat.SendAbort()
-			w.cat.SetPTT(false)
-			w.rttyPTTActive = false
-		} else if wasBusy {
-			w.cat.SendAbort()
-		}
-		w.sendMu.Unlock()
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 
 	case 0x0B: // Key immediate (tune)
 		if len(w.params) > 0 {
@@ -808,6 +774,47 @@ func (w *Winkeyer) clearBuffer() bool {
 	}
 	w.rttyBuf = nil
 	return w.statusByteLocked() != prevStatus
+}
+
+// keyingStop is what a stop path must still send to unkey the radio.
+type keyingStop struct {
+	abortCW    bool // CW or RTTY text handed to the radio may still be keying
+	releasePTT bool // an RTTY bracket, its pending ] release, or a tune carrier holds PTT
+}
+
+// stopKeyingLocked cancels everything that may be keying the radio — the CW
+// sendLoop, an RTTY bracket or its pending ] release, a tune carrier — and
+// reports what must still go out, plus whether the status byte changed. Pass
+// the result to sendStop; holding mu while doing so is fine, since sendLoop
+// never takes mu while holding sendMu.
+// Must be called with w.mu held.
+func (w *Winkeyer) stopKeyingLocked() (keyingStop, bool) {
+	rtty := w.rttyInBracket || w.rttyDoneCancel != nil
+	stop := keyingStop{
+		abortCW:    w.busy || rtty,
+		releasePTT: rtty || w.rttyPTTActive || w.tuning,
+	}
+	prevStatus := w.statusByteLocked()
+	w.tuning = false
+	w.rttyPTTActive = false
+	w.clearBuffer() // stops sendLoop, cancels a pending ] release, ends the bracket
+	return stop, w.statusByteLocked() != prevStatus
+}
+
+// sendStop unkeys the radio as stopKeyingLocked decided. sendMu makes the
+// abort follow any KY sendLoop has already committed to, instead of preceding it.
+func (w *Winkeyer) sendStop(stop keyingStop) {
+	if !stop.abortCW && !stop.releasePTT {
+		return
+	}
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	if stop.abortCW {
+		w.cat.SendAbort()
+	}
+	if stop.releasePTT {
+		w.cat.SetPTT(false)
+	}
 }
 
 // handleRTTYChar processes a character in RTTY/FSK mode.
