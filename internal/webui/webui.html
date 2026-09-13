@@ -789,6 +789,16 @@ function renderHearthStatus() {
   renderHearthControls();
 }
 
+// effectiveArmed is the power-save state the station is heading for. On the
+// replica a queued change wins over the last pushed state, so the button can
+// reverse a queued arm or disarm before the cabin checks in.
+function effectiveArmed(s) {
+  const ps = s && s.powersave;
+  if (!ps) return false;
+  if (s.source === 'replica' && (ps.desired === 'on' || ps.desired === 'off')) return ps.desired === 'on';
+  return !!ps.armed;
+}
+
 function renderHearthControls() {
   const s = hearthStatus;
   const onPi = !!s && s.source === 'pi';
@@ -802,7 +812,7 @@ function renderHearthControls() {
 
   const psBtn = document.getElementById('psBtn');
   psBtn.disabled = !(canUseHearth('powersave') && (onPi || onReplica) && ps && ps.enabled);
-  const verb = ps && ps.armed ? 'disarm' : 'arm';
+  const verb = effectiveArmed(s) ? 'disarm' : 'arm';
   psBtn.textContent = onReplica ? 'Queue ' + verb : verb.charAt(0).toUpperCase() + verb.slice(1);
   psBtn.className = verb === 'arm' ? 'danger' : '';
 }
@@ -853,12 +863,18 @@ async function k4Power(power) {
 async function togglePowerSave() {
   const s = hearthStatus;
   const ps = s && s.powersave;
-  const arm = !(ps && ps.armed);
+  const onReplica = !!s && s.source === 'replica';
+  const arm = !effectiveArmed(s);
   if (arm) {
-    const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
-    const msg = s && s.source === 'replica'
-      ? 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.'
-      : 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
+    let msg;
+    if (onReplica && ps && ps.armed) {
+      msg = 'Replace the queued disarm with arm? The cabin stays in power-save when it next checks in.';
+    } else if (onReplica) {
+      msg = 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.';
+    } else {
+      const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
+      msg = 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
+    }
     if (!confirm(msg)) return;
   }
   const res = await hearthPost('/api/hearth/powersave', {armed: arm});
