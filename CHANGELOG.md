@@ -40,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - MIDI PTT press and release reach the radio in order, so a quick tap can no longer leave the K4 transmitting
 - Stopping MIDI while a PTT pad is held releases PTT before the CAT link closes, and a press arriving during shutdown no longer keys the radio
 - A CATServer client that stops reading no longer stalls radio responses for queries, text decode and other clients — it is disconnected instead
+- WinKeyer tune (key immediate) on and off reach the radio in order, so a quick toggle can't leave the K4 transmitting
+- WinKeyer clear buffer (N1MM Esc) now stops a tune carrier
+- WinKeyer reset and host close release everything still keying the radio — a pending RTTY PTT release, a tune carrier, and CW in progress
+- WinKeyer unpause restarts CW that was queued while paused
 
 ## [0.2.1] - 2026-02-26
 
