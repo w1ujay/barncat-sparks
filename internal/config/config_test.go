@@ -162,3 +162,22 @@ func TestAppConfigToMIDIConfig(t *testing.T) {
 		t.Errorf("mapping[0].Action = %q, want volume", mc.Mappings[0].Action)
 	}
 }
+
+func TestAppConfigHearthFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparks-config.json")
+	cfg := &AppConfig{
+		HearthURL:        "http://stalker-rtl:8123",
+		HearthReplicaURL: "https://cabin.nz1u.net",
+		HearthToken:      "0123456789abcdef0123456789abcdef",
+	}
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HearthURL != cfg.HearthURL || loaded.HearthReplicaURL != cfg.HearthReplicaURL || loaded.HearthToken != cfg.HearthToken {
+		t.Errorf("round trip = %q %q %q", loaded.HearthURL, loaded.HearthReplicaURL, loaded.HearthToken)
+	}
+}

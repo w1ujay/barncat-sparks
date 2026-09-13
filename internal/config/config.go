@@ -27,6 +27,9 @@ type AppConfig struct {
 	PaddleSwap     bool           `json:"paddle_swap"`
 	QK4Volume      bool           `json:"qk4_volume,omitempty"`
 	QK4Address     string         `json:"qk4_address,omitempty"`
+	HearthURL        string         `json:"hearth_url"`
+	HearthReplicaURL string         `json:"hearth_replica_url,omitempty"`
+	HearthToken      string         `json:"hearth_token,omitempty"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
 	Mappings       []MappingEntry `json:"mappings"`
