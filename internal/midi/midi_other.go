@@ -29,6 +29,7 @@ type MIDIDriver struct {
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool
+	closed    bool // set by Close under mu; PTT is never keyed after it
 	done      chan struct{}
 	events    chan midiEvent
 
@@ -78,9 +79,10 @@ func (d *MIDIDriver) Run() error {
 	return fmt.Errorf("MIDI support requires Windows (winmm.dll)")
 }
 
-// Close shuts down the MIDI driver.
+// Close shuts down the MIDI driver, releasing a PTT that MIDI still holds.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
 		close(d.done)
+		d.releasePTT()
 	})
 }
