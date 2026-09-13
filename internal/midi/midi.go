@@ -147,7 +147,8 @@ func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 	if m.Action == "ptt" && d.pttOn {
 		log.Printf("MIDI: note_off ch=%d note=%d -> ptt off", channel, number)
 		d.pttOn = false
-		go d.cat.SetPTT(false)
+		// Synchronous, like key-down in dispatch, so release follows press.
+		d.cat.SetPTT(false)
 	}
 }
 
@@ -179,10 +180,13 @@ func ccValue(value, maxOut int, opts map[string]any) int {
 func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 	switch m.Action {
 	case "ptt":
+		// PTT is sent synchronously, under mu, from the single event loop. A
+		// goroutine per press and per release could reach the radio as RX then
+		// TX and leave it transmitting after the pad is released.
 		d.mu.Lock()
 		d.pttOn = true
+		d.cat.SetPTT(true)
 		d.mu.Unlock()
-		go d.cat.SetPTT(true)
 
 	case "band_up":
 		go d.cat.BandUp()
