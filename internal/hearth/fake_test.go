@@ -46,6 +46,18 @@ func (f *fakeHearth) hitCount() int {
 	return len(f.hits)
 }
 
+// sawHit reports whether key ("METHOD /path") was ever recorded.
+func (f *fakeHearth) sawHit(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, h := range f.hits {
+		if h == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeHearth) authHeaders() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -68,6 +80,14 @@ func jsonReply(body string) http.HandlerFunc {
 func errorReply(status int, msg string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, msg, status)
+	}
+}
+
+// redirectReply answers with a 3xx and a Location header.
+func redirectReply(status int, location string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", location)
+		w.WriteHeader(status)
 	}
 }
 

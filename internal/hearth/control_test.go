@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,34 @@ func TestSetPowerSaveQueuesOnReplicaWhenPiDown(t *testing.T) {
 	}
 	if got := replica.body("POST /api/powersave"); got != `{"desired":"off"}` {
 		t.Errorf("replica body = %s, want {\"desired\":\"off\"}", got)
+	}
+}
+
+func TestSetPowerSaveRedirectIsNotFollowed(t *testing.T) {
+	const location = "https://example.invalid/api/powersave"
+	pi := newFakeHearth(t, map[string]http.HandlerFunc{
+		"POST /api/powersave": redirectReply(http.StatusMovedPermanently, location),
+		"GET /api/powersave":  jsonReply(`{"enabled":true,"armed":false}`),
+	})
+	replica := newFakeHearth(t, map[string]http.HandlerFunc{
+		"POST /api/powersave": jsonReply(`{"enabled":true}`),
+	})
+	queued, err := (&Client{PiURL: pi.URL, ReplicaURL: replica.URL}).SetPowerSave(context.Background(), true)
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != http.StatusMovedPermanently {
+		t.Fatalf("err = %v, want HTTPError 301", err)
+	}
+	if queued {
+		t.Errorf("queued = true, want false")
+	}
+	if !strings.Contains(err.Error(), location) {
+		t.Errorf("Error() = %q, want it to name %s", err.Error(), location)
+	}
+	if pi.sawHit("GET /api/powersave") {
+		t.Errorf("Pi saw GET /api/powersave; redirect must not be followed")
+	}
+	if n := replica.hitCount(); n != 0 {
+		t.Errorf("replica called %d times after a Pi 3xx", n)
 	}
 }
 

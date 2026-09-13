@@ -29,14 +29,23 @@ var (
 )
 
 // HTTPError is a non-2xx response from hearth. Message is hearth's plain-text
-// body, trimmed.
+// body, trimmed. Location is set from the response's Location header when
+// Status is a redirect (3xx); redirects are never followed (see
+// defaultHTTPClient), so the caller sees the redirect itself rather than
+// whatever it points to.
 type HTTPError struct {
-	Status  int
-	Message string
+	Status   int
+	Message  string
+	Location string
 }
 
 func (e *HTTPError) Error() string {
 	switch {
+	case e.Status >= 300 && e.Status < 400:
+		if e.Location != "" {
+			return "hearth redirected to " + e.Location + "; use that URL"
+		}
+		return fmt.Sprintf("hearth redirected (HTTP %d); check the URL", e.Status)
 	case e.Status == http.StatusUnauthorized:
 		return "token rejected"
 	case e.Status == http.StatusForbidden && e.Message != "":
@@ -61,13 +70,22 @@ func isTransport(err error) bool {
 	return errors.As(err, &te)
 }
 
-// Client talks to one hearth site. A nil HTTP uses http.DefaultClient; every
+// Client talks to one hearth site. A nil HTTP uses defaultHTTPClient; every
 // request is bounded by its own timeout.
 type Client struct {
 	PiURL      string
 	ReplicaURL string
 	Token      string
 	HTTP       *http.Client
+}
+
+// defaultHTTPClient never follows redirects: a 3xx response is returned as-is
+// so do() turns it into an *HTTPError instead of Go silently re-issuing a
+// POST as a GET (or dropping the Authorization header on a cross-host hop).
+var defaultHTTPClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 // Identity is GET /api/whoami: who the token authenticates as on that host.
@@ -82,7 +100,7 @@ func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	return defaultHTTPClient
 }
 
 // do sends one request to base+path and decodes a 2xx JSON body into out
@@ -122,7 +140,11 @@ func (c *Client) do(ctx context.Context, base, method, path string, body, out an
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &HTTPError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+		he := &HTTPError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			he.Location = resp.Header.Get("Location")
+		}
+		return he
 	}
 	if out == nil {
 		return nil
