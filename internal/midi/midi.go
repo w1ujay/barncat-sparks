@@ -152,6 +152,20 @@ func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 	}
 }
 
+// releasePTT is called from Close. It marks the driver closed and unkeys the
+// radio if MIDI keyed it: the pad's own release will never be processed, and
+// an event the loop is still finishing must not key the radio afterwards.
+func (d *MIDIDriver) releasePTT() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
+	if d.pttOn {
+		log.Printf("MIDI: releasing PTT on close")
+		d.pttOn = false
+		d.cat.SetPTT(false)
+	}
+}
+
 // optFloat returns a float64 option from a mapping's opts map, or the fallback.
 func optFloat(opts map[string]any, key string, fallback float64) float64 {
 	if opts == nil {
@@ -183,9 +197,12 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		// PTT is sent synchronously, under mu, from the single event loop. A
 		// goroutine per press and per release could reach the radio as RX then
 		// TX and leave it transmitting after the pad is released.
+		// Never key after Close has released PTT (see releasePTT).
 		d.mu.Lock()
-		d.pttOn = true
-		d.cat.SetPTT(true)
+		if !d.closed {
+			d.pttOn = true
+			d.cat.SetPTT(true)
+		}
 		d.mu.Unlock()
 
 	case "band_up":

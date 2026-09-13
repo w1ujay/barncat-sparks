@@ -69,6 +69,7 @@ type MIDIDriver struct {
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool
+	closed    bool // set by Close under mu; PTT is never keyed after it
 	done      chan struct{}
 	events    chan midiEvent
 	devices   []openDevice // active devices
@@ -294,10 +295,13 @@ func (d *MIDIDriver) findDevice(name string, count uintptr) int {
 	return -1
 }
 
-// Close shuts down the MIDI driver and releases all open devices.
+// Close shuts down the MIDI driver and releases all open devices. A PTT that
+// MIDI still holds is released first, before the web UI closes the CAT link;
+// the pad's own release event will never be processed.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
 		close(d.done)
+		d.releasePTT()
 		for _, dev := range d.devices {
 			midiInStop.Call(dev.handle)
 			midiInReset.Call(dev.handle)
