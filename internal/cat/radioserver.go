@@ -108,19 +108,16 @@ func (s *RadioServer) Run() {
 }
 
 // routeConn peeks at the first bytes of a connection to determine whether it
-// is an HTTP request or a raw CAT command, then routes accordingly. A regular
-// Read (not ReadFull) is used because short CAT commands like "FA;" may deliver
-// fewer than 4 bytes.
+// is an HTTP request or a raw CAT command, then routes accordingly.
 func (s *RadioServer) routeConn(conn net.Conn) {
-	peek := make([]byte, 4)
-	n, err := conn.Read(peek)
+	peek, err := peekProtocol(conn)
 	if err != nil {
 		conn.Close()
 		return
 	}
-	wrapped := &prefixConn{Conn: conn, buf: peek[:n]}
+	wrapped := &prefixConn{Conn: conn, buf: peek}
 
-	if isHTTP(peek[:n]) {
+	if isHTTP(peek) {
 		select {
 		case s.httpLn.ch <- wrapped:
 		case <-s.done:
@@ -135,6 +132,11 @@ func (s *RadioServer) routeConn(conn net.Conn) {
 // and dispatches each to the Radio interface.
 func (s *RadioServer) handleClient(conn net.Conn) {
 	s.mu.Lock()
+	if s.clients == nil { // accepted just before Close
+		s.mu.Unlock()
+		conn.Close()
+		return
+	}
 	s.clients[conn] = struct{}{}
 	s.mu.Unlock()
 

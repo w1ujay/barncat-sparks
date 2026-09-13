@@ -23,6 +23,7 @@ type CATClient struct {
 	transport io.ReadWriteCloser
 	respCh    chan string
 	decodeCh  chan string // dedicated channel for TT (text decode) responses
+	queryMu   sync.Mutex  // serializes query transactions on respCh (drain, send, await)
 
 	// Response relays — all responses are broadcast to every writer in this list
 	// (used by CATServer to forward responses to multiple TCP clients).
@@ -251,25 +252,39 @@ func (c *CATClient) drainResponses() {
 	}
 }
 
-// QuerySpeed queries the current keyer speed from the K4.
-func (c *CATClient) QuerySpeed() (int, error) {
+// query sends cmd and returns the payload of the first response starting with
+// prefix. The whole transaction holds queryMu: respCh is shared, so a
+// concurrent query could otherwise drain this reply, or receive it and discard
+// it as unmatched.
+func (c *CATClient) query(cmd, prefix string) (string, error) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
 	c.drainResponses()
-	if err := c.Send("KS;"); err != nil {
-		return 0, err
+	if err := c.Send(cmd); err != nil {
+		return "", err
 	}
 	timeout := time.After(500 * time.Millisecond)
 	for {
 		select {
 		case resp := <-c.respCh:
-			if strings.HasPrefix(resp, "KS") {
-				var wpm int
-				fmt.Sscanf(resp[2:], "%d", &wpm)
-				return wpm, nil
+			if strings.HasPrefix(resp, prefix) {
+				return resp[len(prefix):], nil
 			}
 		case <-timeout:
-			return 0, fmt.Errorf("KS query timeout")
+			return "", fmt.Errorf("%s query timeout", prefix)
 		}
 	}
+}
+
+// QuerySpeed queries the current keyer speed from the K4.
+func (c *CATClient) QuerySpeed() (int, error) {
+	resp, err := c.query("KS;", "KS")
+	if err != nil {
+		return 0, err
+	}
+	var wpm int
+	fmt.Sscanf(resp, "%d", &wpm)
+	return wpm, nil
 }
 
 // SetFreqA sets VFO A frequency in Hz.
@@ -288,23 +303,13 @@ func (c *CATClient) SetFreqB(hz int) error {
 
 // GetFreqA queries VFO A frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqA() (int, error) {
-	c.drainResponses()
-	if err := c.Send("FA;"); err != nil {
+	resp, err := c.query("FA;", "FA")
+	if err != nil {
 		return 0, err
 	}
-	timeout := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case resp := <-c.respCh:
-			if strings.HasPrefix(resp, "FA") {
-				var hz int
-				fmt.Sscanf(resp[2:], "%d", &hz)
-				return hz, nil
-			}
-		case <-timeout:
-			return 0, fmt.Errorf("FA query timeout")
-		}
-	}
+	var hz int
+	fmt.Sscanf(resp, "%d", &hz)
+	return hz, nil
 }
 
 // SetVolume sets the K4 audio gain (0-60) for a receiver.
@@ -424,23 +429,13 @@ func (c *CATClient) VFOBtoA() error {
 
 // GetFreqB queries VFO B frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqB() (int, error) {
-	c.drainResponses()
-	if err := c.Send("FB;"); err != nil {
+	resp, err := c.query("FB;", "FB")
+	if err != nil {
 		return 0, err
 	}
-	timeout := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case resp := <-c.respCh:
-			if strings.HasPrefix(resp, "FB") {
-				var hz int
-				fmt.Sscanf(resp[2:], "%d", &hz)
-				return hz, nil
-			}
-		case <-timeout:
-			return 0, fmt.Errorf("FB query timeout")
-		}
-	}
+	var hz int
+	fmt.Sscanf(resp, "%d", &hz)
+	return hz, nil
 }
 
 // SetRIT sets RIT on or off.
@@ -598,23 +593,13 @@ func (c *CATClient) SendRTTYEOT() error {
 // QueryMode queries the current operating mode from the radio.
 // Returns the mode number: 1=LSB, 2=USB, 3=CW, 4=FM, 5=AM, 6=DATA, 7=CW-REV, 9=DATA-REV.
 func (c *CATClient) QueryMode() (int, error) {
-	c.drainResponses()
-	if err := c.Send("MD;"); err != nil {
+	resp, err := c.query("MD;", "MD")
+	if err != nil {
 		return 0, err
 	}
-	timeout := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case resp := <-c.respCh:
-			if strings.HasPrefix(resp, "MD") {
-				var mode int
-				fmt.Sscanf(resp[2:], "%d", &mode)
-				return mode, nil
-			}
-		case <-timeout:
-			return 0, fmt.Errorf("MD query timeout")
-		}
-	}
+	var mode int
+	fmt.Sscanf(resp, "%d", &mode)
+	return mode, nil
 }
 
 // SetTextDecode enables or disables the K4's built-in text decoder.
