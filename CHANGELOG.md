@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Concurrent radio queries (RadioServer clients, MIDI VFO tuning) no longer time out by taking each other's replies
 - A WinKeyer port failure during Start now stops CATServer, RadioServer, and the LP-100A, so a retry can bind the same ports
 - RadioServer recognizes HTTP requests whose first bytes arrive in separate reads instead of treating them as CAT
+- Stop and N1MM's clear buffer (Esc) no longer let a CW `KY` already in flight reach the radio after the abort `RX;`
+- After an RTTY message finishes, Stop and the next clear buffer no longer send a stray `RX;` that could unkey another transmission
 
 ## [0.2.1] - 2026-02-26
 
