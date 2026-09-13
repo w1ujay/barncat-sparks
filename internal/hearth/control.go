@@ -34,6 +34,6 @@ func (c *Client) SetPowerSave(ctx context.Context, armed bool) (queued bool, err
 		body["desired"] = "on"
 	}
 	return c.piThenReplica(ctx, controlTimeout, func(base string, timeout time.Duration) error {
-		return c.do(ctx, base, http.MethodPost, "/api/powersave", body, nil, timeout)
+		return c.do(ctx, base, http.MethodPost, c.sitePath("/api/powersave"), body, nil, timeout)
 	})
 }

@@ -161,6 +161,7 @@ K4 directly.
 |-----------------|---------------------------------------------------------------------------|
 | Hearth URL      | The cabin Pi's hearth API, reached over the tailnet, e.g. `http://<cabin-pi>:8123` |
 | Replica URL     | Optional hosted replica, used when the Pi is unreachable, e.g. `https://<replica-host>` |
+| Site            | Needed when the replica is a multi-site hub: the site name, e.g. `cabin`. Sent as `?site=` on status and power-save requests; a single-site Pi ignores it. |
 | Operator Token  | Issued by the site owner, scoped to `k4` and/or `powersave`. Press Test to see the token's name and scopes. |
 
 ### Access

@@ -30,6 +30,7 @@ type AppConfig struct {
 	HearthURL        string         `json:"hearth_url"`
 	HearthReplicaURL string         `json:"hearth_replica_url,omitempty"`
 	HearthToken      string         `json:"hearth_token,omitempty"`
+	HearthSite       string         `json:"hearth_site,omitempty"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
 	Mappings       []MappingEntry `json:"mappings"`

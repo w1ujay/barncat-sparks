@@ -68,7 +68,7 @@ func (c *Client) Status(ctx context.Context) Status {
 		return Status{Source: SourceUnreachable, Err: ErrNotConfigured.Error()}
 	}
 	var blob statusBlob
-	err := c.do(ctx, c.PiURL, http.MethodGet, "/api/status", nil, &blob, piTimeout)
+	err := c.do(ctx, c.PiURL, http.MethodGet, c.sitePath("/api/status"), nil, &blob, piTimeout)
 	if err == nil {
 		return Status{Source: SourcePi, K4: blob.K4, PowerSave: blob.PowerSave}
 	}
@@ -90,11 +90,11 @@ func (c *Client) replicaStatus(ctx context.Context, piErr error) Status {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		blobErr = c.do(ctx, c.ReplicaURL, http.MethodGet, "/api/status", nil, &blob, replicaTimeout)
+		blobErr = c.do(ctx, c.ReplicaURL, http.MethodGet, c.sitePath("/api/status"), nil, &blob, replicaTimeout)
 	}()
 	go func() {
 		defer wg.Done()
-		psErr = c.do(ctx, c.ReplicaURL, http.MethodGet, "/api/powersave", nil, &ps, replicaTimeout)
+		psErr = c.do(ctx, c.ReplicaURL, http.MethodGet, c.sitePath("/api/powersave"), nil, &ps, replicaTimeout)
 	}()
 	wg.Wait()
 

@@ -169,6 +169,7 @@ func TestAppConfigHearthFields(t *testing.T) {
 		HearthURL:        "http://stalker-rtl:8123",
 		HearthReplicaURL: "https://cabin.nz1u.net",
 		HearthToken:      "0123456789abcdef0123456789abcdef",
+		HearthSite:       "cabin",
 	}
 	if err := SaveAppConfig(path, cfg); err != nil {
 		t.Fatal(err)
@@ -177,7 +178,8 @@ func TestAppConfigHearthFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.HearthURL != cfg.HearthURL || loaded.HearthReplicaURL != cfg.HearthReplicaURL || loaded.HearthToken != cfg.HearthToken {
-		t.Errorf("round trip = %q %q %q", loaded.HearthURL, loaded.HearthReplicaURL, loaded.HearthToken)
+	if loaded.HearthURL != cfg.HearthURL || loaded.HearthReplicaURL != cfg.HearthReplicaURL ||
+		loaded.HearthToken != cfg.HearthToken || loaded.HearthSite != cfg.HearthSite {
+		t.Errorf("round trip = %q %q %q %q", loaded.HearthURL, loaded.HearthReplicaURL, loaded.HearthToken, loaded.HearthSite)
 	}
 }

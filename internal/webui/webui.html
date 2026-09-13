@@ -163,6 +163,10 @@ details summary:hover{color:#569cd6}
   <input id="hearthReplicaUrl" type="text" placeholder="https://cabin.nz1u.net (optional)">
 </div>
 <div class="form-row">
+  <label for="hearthSite">Site</label>
+  <input id="hearthSite" type="text" placeholder="cabin (only for a multi-site hub replica)">
+</div>
+<div class="form-row">
   <label for="hearthToken">Operator Token</label>
   <div class="inline-row">
     <input id="hearthToken" type="password">
@@ -280,6 +284,7 @@ async function init() {
   document.getElementById('hearthUrl').value = cfg.hearth_url || '';
   document.getElementById('hearthReplicaUrl').value = cfg.hearth_replica_url || '';
   document.getElementById('hearthToken').value = cfg.hearth_token || '';
+  document.getElementById('hearthSite').value = cfg.hearth_site || '';
 
   // Set transport radio
   const transport = cfg.cat_transport || 'tcp';
@@ -514,6 +519,7 @@ function gatherConfig() {
     hearth_url: document.getElementById('hearthUrl').value.trim(),
     hearth_replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
     hearth_token: document.getElementById('hearthToken').value,
+    hearth_site: document.getElementById('hearthSite').value.trim(),
     mappings: mappings.map(m => ({
       action: m.action,
       type: m.type || 'cc',
