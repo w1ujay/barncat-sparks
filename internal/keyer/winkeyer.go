@@ -397,6 +397,12 @@ func (w *Winkeyer) execCommand() {
 		if len(w.params) > 0 {
 			w.paused = w.params[0] != 0
 			log.Printf("WK: pause = %v", w.paused)
+			// sendLoop exits when it sees the pause and leaves the rest of the
+			// buffer queued; restart it once the host unpauses. The !busy check
+			// keeps a paused loop that hasn't exited yet from getting a twin.
+			if !w.paused && !w.busy && w.readPos < w.bufLen {
+				w.startSendLoopLocked()
+			}
 		}
 
 	case 0x07: // Get speed pot
@@ -588,17 +594,24 @@ func (w *Winkeyer) bufferChar(ch byte) {
 	if w.trace {
 		log.Printf("WK trace: buffer '%c' @%d (len=%d)", ch, w.writePos-1, w.bufLen)
 	}
-	wasBusy := w.busy
+	if w.busy {
+		w.updateXoff()
+		return
+	}
+	w.startSendLoopLocked()
+}
+
+// startSendLoopLocked marks the keyer busy, reports the status change, and
+// starts a sendLoop with its own done/cancel channels. Used when a character
+// arrives while idle, and when the host unpauses with CW still queued.
+// Must be called with w.mu held and w.busy false.
+func (w *Winkeyer) startSendLoopLocked() {
 	w.busy = true
 	w.updateXoff()
-
-	if !wasBusy {
-		w.sendStatusLocked()
-		// Start the echo/send goroutine with its own done/cancel channels
-		w.echoDone = make(chan struct{})
-		w.cancel = make(chan struct{})
-		go w.sendLoop(w.echoDone, w.cancel)
-	}
+	w.sendStatusLocked()
+	w.echoDone = make(chan struct{})
+	w.cancel = make(chan struct{})
+	go w.sendLoop(w.echoDone, w.cancel)
 }
 
 // sendLoop drains the buffer, sends KY commands, and echoes characters.
