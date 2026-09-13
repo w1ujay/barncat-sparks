@@ -64,6 +64,16 @@ details summary:hover{color:#569cd6}
 .mapping-field>label{font-size:0.8em;color:#888;white-space:nowrap;display:inline}
 .midi-device-list label{display:block;padding:3px 0;font-size:0.9em;cursor:pointer}
 .midi-device-list input[type="checkbox"]{width:auto;margin-right:6px}
+.inline-row{display:flex;gap:6px}
+.inline-row input{flex:1}
+.station-row{display:grid;grid-template-columns:100px 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
+.station-label{font-size:0.85em;color:#9cdcfe}
+.station-value{font-size:0.9em}
+.station-source{font-size:0.85em;color:#888;margin:8px 0}
+.station-source.live{color:#4ec9b0}
+.station-source.warn{color:#d7ba7d}
+.station-note{font-size:0.85em;color:#888;min-height:1.3em;margin-bottom:6px}
+.station-note.error{color:#f48771}
 </style>
 </head>
 <body>
@@ -143,6 +153,39 @@ details summary:hover{color:#569cd6}
   <input id="keyerSpeed" type="number" min="5" max="99" placeholder="25">
 </div>
 
+<h2>Station</h2>
+<div class="form-row">
+  <label for="hearthUrl">Hearth URL</label>
+  <input id="hearthUrl" type="text" placeholder="http://hearth.example:8123">
+</div>
+<div class="form-row">
+  <label for="hearthReplicaUrl">Replica URL</label>
+  <input id="hearthReplicaUrl" type="text" placeholder="https://replica.example (optional)">
+</div>
+<div class="form-row">
+  <label for="hearthToken">Operator Token</label>
+  <div class="inline-row">
+    <input id="hearthToken" type="password">
+    <button class="secondary" onclick="testHearth()">Test</button>
+  </div>
+</div>
+<div class="station-note" id="hearthIdentity"></div>
+<div id="stationPanel" style="display:none">
+  <div class="station-source" id="stationSource">—</div>
+  <div class="station-row">
+    <span class="station-label">K4</span>
+    <span class="station-value" id="k4State">—</span>
+    <button id="k4OnBtn" onclick="k4Power('on')" disabled>On</button>
+    <button id="k4OffBtn" class="danger" onclick="k4Power('off')" disabled>Off</button>
+  </div>
+  <div class="station-row">
+    <span class="station-label">Power-save</span>
+    <span class="station-value" id="psState">—</span>
+    <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
+  </div>
+  <div class="station-note" id="stationMsg"></div>
+</div>
+
 <h2>MIDI</h2>
 <div id="midiDevicesContainer"></div>
 <div class="mapping-btns">
@@ -188,6 +231,11 @@ let midiDevices = [];
 let availableMIDIDevices = [];
 let controlMaps = {};
 let statusPoll = null;
+let sparksRunning = false;
+let hearthIdentity = null;  // last successful whoami
+let hearthStatus = null;    // last /api/hearth/status
+let hearthPoll = null;
+let hearthPollBusy = false;
 
 async function init() {
   const [actResp, cfgResp, portsResp, midiResp, ctrlResp, statusResp, aboutResp] = await Promise.all([
@@ -230,6 +278,9 @@ async function init() {
   document.getElementById('catListen').value = cfg.cat_listen || '';
   document.getElementById('radioServerListen').value = cfg.radio_server_listen || '';
   document.getElementById('ampUrl').value = cfg.amp_url || '';
+  document.getElementById('hearthUrl').value = cfg.hearth_url || '';
+  document.getElementById('hearthReplicaUrl').value = cfg.hearth_replica_url || '';
+  document.getElementById('hearthToken').value = cfg.hearth_token || '';
 
   // Set transport radio
   const transport = cfg.cat_transport || 'tcp';
@@ -244,6 +295,7 @@ async function init() {
   mappings = cfg.mappings || [];
   renderMappings();
   applyStatus(status);
+  startHearth(cfg.hearth_url || '');
 }
 
 async function rescanMIDI() {
@@ -460,6 +512,9 @@ function gatherConfig() {
     qk4_address: document.getElementById('qk4Address').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
     protocol_trace: document.getElementById('protocolTrace').checked,
+    hearth_url: document.getElementById('hearthUrl').value.trim(),
+    hearth_replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    hearth_token: document.getElementById('hearthToken').value,
     mappings: mappings.map(m => ({
       action: m.action,
       type: m.type || 'cc',
@@ -479,6 +534,7 @@ async function doSave() {
   });
   if (resp.ok) {
     setStatus(false, 'Settings saved');
+    startHearth(cfg.hearth_url);
   } else {
     const text = await resp.text();
     setStatus(false, 'Save failed: ' + text);
@@ -493,6 +549,7 @@ async function doStart() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(cfg)
   });
+  startHearth(cfg.hearth_url);
 
   const resp = await fetch('/api/start', {method: 'POST'});
   const status = await resp.json();
@@ -506,6 +563,7 @@ async function doStop() {
 }
 
 function applyStatus(s) {
+  sparksRunning = s.running;
   setStatus(s.running, s.message);
   document.getElementById('startBtn').disabled = s.running;
   document.getElementById('stopBtn').disabled = !s.running;
@@ -544,6 +602,225 @@ function renderAbout(about) {
     }).join(', ');
   }
   el.innerHTML = html;
+}
+
+// --- Station (lempster-hearth) ---
+// Everything hearth sends is rendered with textContent, never innerHTML.
+
+function startHearth(url) {
+  if (hearthPoll) { clearInterval(hearthPoll); hearthPoll = null; }
+  const panel = document.getElementById('stationPanel');
+  if (!url) {
+    panel.style.display = 'none';
+    hearthStatus = null;
+    hearthIdentity = null;
+    document.getElementById('hearthIdentity').textContent = '';
+    return;
+  }
+  panel.style.display = '';
+  fetchHearthIdentity({
+    url: url,
+    replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    token: document.getElementById('hearthToken').value
+  }).then(renderHearthControls);
+  pollHearth();
+  hearthPoll = setInterval(pollHearth, 10000);
+}
+
+async function testHearth() {
+  const el = document.getElementById('hearthIdentity');
+  el.className = 'station-note';
+  el.textContent = 'Testing…';
+  await fetchHearthIdentity({
+    url: document.getElementById('hearthUrl').value.trim(),
+    replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    token: document.getElementById('hearthToken').value
+  });
+  renderHearthControls();
+}
+
+async function fetchHearthIdentity(body) {
+  const el = document.getElementById('hearthIdentity');
+  try {
+    const resp = await fetch('/api/hearth/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const res = await resp.json();
+    if (res.error) {
+      hearthIdentity = null;
+      el.className = 'station-note error';
+      el.textContent = '✗ ' + res.error;
+      return;
+    }
+    hearthIdentity = res;
+    const who = res.owner ? 'owner' : res.name + ' · ' + (res.scopes || []).join(', ');
+    el.className = 'station-note';
+    el.textContent = '✓ ' + who + (res.replica ? ' (via replica)' : '');
+  } catch (e) {
+    hearthIdentity = null;
+    el.className = 'station-note error';
+    el.textContent = '✗ ' + e.message;
+  }
+}
+
+function canUseHearth(scope) {
+  return !!hearthIdentity && (hearthIdentity.owner || (hearthIdentity.scopes || []).includes(scope));
+}
+
+async function pollHearth() {
+  if (hearthPollBusy) return;
+  hearthPollBusy = true;
+  try {
+    const resp = await fetch('/api/hearth/status');
+    hearthStatus = await resp.json();
+  } catch (e) {
+    hearthStatus = {source: 'unreachable', error: e.message};
+  } finally {
+    hearthPollBusy = false;
+  }
+  renderHearthStatus();
+}
+
+function fmtAge(sec) {
+  if (sec < 90) return sec + 's';
+  if (sec < 5400) return Math.round(sec / 60) + 'm';
+  return (sec / 3600).toFixed(1) + 'h';
+}
+
+function ageSec(iso) {
+  return Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+}
+
+function fmtClock(iso) {
+  return new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+function describeK4(k4) {
+  switch (k4.card_state) {
+    case 'on': {
+      let t = 'ON';
+      if (k4.freq_hz) t += ' · ' + (k4.freq_hz / 1e6).toFixed(3) + ' MHz';
+      if (k4.mode) t += ' · ' + k4.mode;
+      return t;
+    }
+    case 'off': return 'OFF';
+    case 'unreachable': return 'unreachable';
+    default: return 'unknown';
+  }
+}
+
+function describePowerSave(ps) {
+  if (!ps || !ps.enabled) return '—';
+  let t;
+  if (!ps.armed) t = 'disarmed';
+  else if (ps.phase === 'down' && ps.next_up_at) t = 'armed · down until ' + fmtClock(ps.next_up_at);
+  else t = 'armed · ' + (ps.phase || 'up');
+  if (ps.desired) {
+    t += ' · ' + (ps.desired === 'on' ? 'arm' : 'disarm') + ' queued';
+    if (ps.desired_by) t += ' by ' + ps.desired_by;
+    if (ps.desired_at) t += ' ' + fmtAge(ageSec(ps.desired_at)) + ' ago';
+  }
+  return t;
+}
+
+function renderHearthStatus() {
+  const s = hearthStatus;
+  if (!s) return;
+  const src = document.getElementById('stationSource');
+  if (s.source === 'pi') {
+    src.className = 'station-source live';
+    src.textContent = 'Pi · live';
+  } else if (s.source === 'replica') {
+    src.className = 'station-source warn';
+    let t = 'Replica · cabin dark, last heard ' + fmtAge(s.push_age_sec || 0) + ' ago';
+    const ps = s.powersave;
+    if (ps && ps.armed && ps.next_up_at) t += ', next window ' + fmtClock(ps.next_up_at);
+    if (ps && ps.overdue_sec > 0) t += ' — OVERDUE ' + fmtAge(ps.overdue_sec);
+    if (s.error) t += ' — ' + s.error;
+    src.textContent = t;
+  } else {
+    src.className = 'station-source warn';
+    src.textContent = 'Unreachable — ' + (s.error || 'no response');
+  }
+  document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
+  document.getElementById('psState').textContent = describePowerSave(s.powersave);
+  renderHearthControls();
+}
+
+function renderHearthControls() {
+  const s = hearthStatus;
+  const onPi = !!s && s.source === 'pi';
+  const onReplica = !!s && s.source === 'replica';
+  const k4 = s && s.k4;
+  const ps = s && s.powersave;
+
+  const k4ok = canUseHearth('k4') && onPi && !!k4;
+  document.getElementById('k4OnBtn').disabled = !(k4ok && k4.card_state === 'off' && k4.power_relay);
+  document.getElementById('k4OffBtn').disabled = !(k4ok && k4.card_state === 'on');
+
+  const psBtn = document.getElementById('psBtn');
+  psBtn.disabled = !(canUseHearth('powersave') && (onPi || onReplica) && ps && ps.enabled);
+  const verb = ps && ps.armed ? 'disarm' : 'arm';
+  psBtn.textContent = onReplica ? 'Queue ' + verb : verb.charAt(0).toUpperCase() + verb.slice(1);
+  psBtn.className = verb === 'arm' ? 'danger' : '';
+}
+
+function setStationMsg(text, isError) {
+  const el = document.getElementById('stationMsg');
+  el.className = 'station-note' + (isError ? ' error' : '');
+  el.textContent = text;
+}
+
+async function hearthPost(path, body) {
+  try {
+    const resp = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) { setStationMsg(await resp.text(), true); return null; }
+    const res = await resp.json();
+    if (res.error) setStationMsg(res.error, true);
+    return res;
+  } catch (e) {
+    setStationMsg(e.message, true);
+    return null;
+  }
+}
+
+async function k4Power(power) {
+  if (power === 'off') {
+    let msg = 'Power OFF the cabin K4?';
+    if (sparksRunning) msg += '\n\nSparks is connected to it — the CAT link will drop.';
+    if (!confirm(msg)) return;
+  }
+  const res = await hearthPost('/api/hearth/k4', {power: power});
+  if (res && res.ok) {
+    setStationMsg(power === 'on' ? 'Pulsed power — waiting for the rig to come up' : 'Power-off sent', false);
+  }
+  pollHearth();
+}
+
+async function togglePowerSave() {
+  const s = hearthStatus;
+  const ps = s && s.powersave;
+  const arm = !(ps && ps.armed);
+  if (arm) {
+    const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
+    const msg = s && s.source === 'replica'
+      ? 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.'
+      : 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
+    if (!confirm(msg)) return;
+  }
+  const res = await hearthPost('/api/hearth/powersave', {armed: arm});
+  if (res && res.ok) {
+    setStationMsg(res.queued
+      ? 'Queued on the replica — the cabin picks it up at its next window'
+      : (arm ? 'Power-save armed' : 'Power-save disarmed'), false);
+  }
+  pollHearth();
 }
 
 init();

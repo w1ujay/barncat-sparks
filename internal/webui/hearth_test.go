@@ -141,3 +141,23 @@ func TestHearthPowerSaveRequiresArmed(t *testing.T) {
 		t.Errorf("status = %d, want 400", code)
 	}
 }
+
+// TestIndexWiresStation guards the page's hooks into the hearth routes and
+// config keys; the JS itself is verified manually (Step 6).
+func TestIndexWiresStation(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&WebUI{}).handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="stationPanel"`, `id="hearthToken"`, `id="k4OnBtn"`, `id="psBtn"`,
+		`'/api/hearth/status'`, `'/api/hearth/test'`, `'/api/hearth/k4'`, `'/api/hearth/powersave'`,
+		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("webui.html missing %s", want)
+		}
+	}
+	if strings.Contains(body, "innerHTML = hearth") {
+		t.Error("hearth-derived text must be rendered with textContent")
+	}
+}
