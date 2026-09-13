@@ -235,8 +235,6 @@ let sparksRunning = false;
 let hearthIdentity = null;  // last successful whoami
 let hearthStatus = null;    // last /api/hearth/status
 let hearthPoll = null;
-let hearthPollBusy = false;
-let hearthIdentityBusy = false;  // guards overlapping identity re-fetches
 
 async function init() {
   const [actResp, cfgResp, portsResp, midiResp, ctrlResp, statusResp, aboutResp] = await Promise.all([
@@ -608,14 +606,23 @@ function renderAbout(about) {
 // --- Station (lempster-hearth) ---
 // Everything hearth sends is rendered with textContent, never innerHTML.
 
+// hearthGen increases whenever the station is (re)started from saved config.
+// Every hearth request remembers the generation it started in and drops its
+// reply if the station changed meanwhile, so one station's status can never
+// drive the buttons for another.
+let hearthGen = 0;
+let hearthPollGen = null;          // generation whose status poll is in flight
+let hearthIdentityFetchGen = null; // generation whose identity re-fetch is in flight
+
 function startHearth(url) {
   if (hearthPoll) { clearInterval(hearthPoll); hearthPoll = null; }
+  hearthGen++;
+  hearthStatus = null;
+  hearthIdentity = null;
+  resetStationView();
   const panel = document.getElementById('stationPanel');
   if (!url) {
     panel.style.display = 'none';
-    hearthStatus = null;
-    hearthIdentity = null;
-    document.getElementById('hearthIdentity').textContent = '';
     return;
   }
   panel.style.display = '';
@@ -626,6 +633,21 @@ function startHearth(url) {
   }).then(renderHearthControls);
   pollHearth();
   hearthPoll = setInterval(pollHearth, 10000);
+}
+
+// resetStationView blanks what was shown for the previous station and
+// disables its controls until the new station answers.
+function resetStationView() {
+  const src = document.getElementById('stationSource');
+  src.className = 'station-source';
+  src.textContent = '—';
+  document.getElementById('k4State').textContent = '—';
+  document.getElementById('psState').textContent = '—';
+  const id = document.getElementById('hearthIdentity');
+  id.className = 'station-note';
+  id.textContent = '';
+  setStationMsg('', false);
+  renderHearthControls();
 }
 
 async function testHearth() {
@@ -641,29 +663,30 @@ async function testHearth() {
 }
 
 async function fetchHearthIdentity(body) {
-  const el = document.getElementById('hearthIdentity');
+  const gen = hearthGen;
+  let res;
   try {
     const resp = await fetch('/api/hearth/test', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     });
-    const res = await resp.json();
-    if (res.error) {
-      hearthIdentity = null;
-      el.className = 'station-note error';
-      el.textContent = '✗ ' + res.error;
-      return;
-    }
-    hearthIdentity = res;
-    const who = res.owner ? 'owner' : res.name + ' · ' + (res.scopes || []).join(', ');
-    el.className = 'station-note';
-    el.textContent = '✓ ' + who + (res.replica ? ' (via replica)' : '');
+    res = await resp.json();
   } catch (e) {
+    res = {error: e.message};
+  }
+  if (gen !== hearthGen) return; // the station changed while this was in flight
+  const el = document.getElementById('hearthIdentity');
+  if (res.error) {
     hearthIdentity = null;
     el.className = 'station-note error';
-    el.textContent = '✗ ' + e.message;
+    el.textContent = '✗ ' + res.error;
+    return;
   }
+  hearthIdentity = res;
+  const who = res.owner ? 'owner' : res.name + ' · ' + (res.scopes || []).join(', ');
+  el.className = 'station-note';
+  el.textContent = '✓ ' + who + (res.replica ? ' (via replica)' : '');
 }
 
 function canUseHearth(scope) {
@@ -671,16 +694,20 @@ function canUseHearth(scope) {
 }
 
 async function pollHearth() {
-  if (hearthPollBusy) return;
-  hearthPollBusy = true;
+  const gen = hearthGen;
+  if (hearthPollGen === gen) return; // this station's poll is already in flight
+  hearthPollGen = gen;
+  let status;
   try {
     const resp = await fetch('/api/hearth/status');
-    hearthStatus = await resp.json();
+    status = await resp.json();
   } catch (e) {
-    hearthStatus = {source: 'unreachable', error: e.message};
+    status = {source: 'unreachable', error: e.message};
   } finally {
-    hearthPollBusy = false;
+    if (hearthPollGen === gen) hearthPollGen = null;
   }
+  if (gen !== hearthGen) return; // the station changed; this status is for the old one
+  hearthStatus = status;
   renderHearthStatus();
 }
 
@@ -747,14 +774,15 @@ function renderHearthStatus() {
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
   document.getElementById('psState').textContent = describePowerSave(s.powersave);
-  if (!hearthIdentity && s.source !== 'unreachable' && !hearthIdentityBusy) {
-    hearthIdentityBusy = true;
+  if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
+    const gen = hearthGen;
+    hearthIdentityFetchGen = gen;
     fetchHearthIdentity({
       url: document.getElementById('hearthUrl').value.trim(),
       replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
       token: document.getElementById('hearthToken').value
     }).then(() => {
-      hearthIdentityBusy = false;
+      if (hearthIdentityFetchGen === gen) hearthIdentityFetchGen = null;
       renderHearthControls();
     });
   }
@@ -786,18 +814,25 @@ function setStationMsg(text, isError) {
 }
 
 async function hearthPost(path, body) {
+  const gen = hearthGen;
+  const current = () => gen === hearthGen; // false once the station has changed
   try {
     const resp = await fetch(path, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     });
-    if (!resp.ok) { setStationMsg(await resp.text(), true); return null; }
+    if (!resp.ok) {
+      const text = await resp.text();
+      if (current()) setStationMsg(text, true);
+      return null;
+    }
     const res = await resp.json();
+    if (!current()) return null; // don't report the old station's result on the new one
     if (res.error) setStationMsg(res.error, true);
     return res;
   } catch (e) {
-    setStationMsg(e.message, true);
+    if (current()) setStationMsg(e.message, true);
     return null;
   }
 }
