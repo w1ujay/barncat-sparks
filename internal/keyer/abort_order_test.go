@@ -107,3 +107,10 @@ func TestCloseAbortComesAfterInFlightKY(t *testing.T) {
 	wk, r := newOrderWK(t)
 	expectKYBeforeAbort(t, r, wk.Close)
 }
+
+// TestClearBufferAbortComesAfterInFlightKY: N1MM's Esc (clear buffer) must not
+// let a KY that sendLoop already committed reach the radio after the abort RX.
+func TestClearBufferAbortComesAfterInFlightKY(t *testing.T) {
+	wk, r := newOrderWK(t)
+	expectKYBeforeAbort(t, r, func() { wk.processByte(0x0A) })
+}

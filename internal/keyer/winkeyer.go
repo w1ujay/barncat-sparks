@@ -462,6 +462,10 @@ func (w *Winkeyer) execCommand() {
 			w.sendStatusLocked()
 		}
 		log.Printf("WK: clear buffer")
+		// sendLoop may already be past its cancel check with a KY in hand;
+		// sendMu makes the abort follow that KY instead of preceding it.
+		// Holding mu here is fine: sendLoop never takes mu while holding sendMu.
+		w.sendMu.Lock()
 		if wasRTTYBracket || hadPendingRTTY {
 			w.cat.SendAbort()
 			w.cat.SetPTT(false)
@@ -469,6 +473,7 @@ func (w *Winkeyer) execCommand() {
 		} else if wasBusy {
 			w.cat.SendAbort()
 		}
+		w.sendMu.Unlock()
 
 	case 0x0B: // Key immediate (tune)
 		if len(w.params) > 0 {
