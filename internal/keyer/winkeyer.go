@@ -287,19 +287,11 @@ func (w *Winkeyer) execAdmin() {
 	switch w.adminCode {
 	case 0x01: // Reset
 		w.hostOpen = false
-		wasInBracket := w.rttyInBracket
+		// Stop first: stopKeyingLocked reads the RTTY/tune/CW state it clears,
+		// including a pending ] release that has no open bracket any more.
+		stop, _ := w.stopKeyingLocked()
 		w.rttyEnabled = false
-		w.rttyInBracket = false
-		w.rttyBuf = nil
-		w.rttyPTTActive = false
-		if w.rttyDoneCancel != nil {
-			w.rttyDoneCancel()
-			w.rttyDoneCancel = nil
-		}
-		w.clearBuffer()
-		if wasInBracket {
-			go w.cat.SetPTT(false)
-		}
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 		log.Printf("WK: admin reset")
 
 	case 0x02: // Host Open
@@ -310,19 +302,11 @@ func (w *Winkeyer) execAdmin() {
 
 	case 0x03: // Host Close
 		w.hostOpen = false
-		wasInBracket := w.rttyInBracket
+		// Stop first, as in Reset: the logger is leaving, so nothing it
+		// started — CW, RTTY, a pending ] release, a tune carrier — stays keyed.
+		stop, _ := w.stopKeyingLocked()
 		w.rttyEnabled = false
-		w.rttyInBracket = false
-		w.rttyBuf = nil
-		w.rttyPTTActive = false
-		if w.rttyDoneCancel != nil {
-			w.rttyDoneCancel()
-			w.rttyDoneCancel = nil
-		}
-		w.clearBuffer()
-		if wasInBracket {
-			go w.cat.SetPTT(false)
-		}
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 		log.Printf("WK: host close")
 
 	case 0x04: // Echo Test
