@@ -236,6 +236,7 @@ let hearthIdentity = null;  // last successful whoami
 let hearthStatus = null;    // last /api/hearth/status
 let hearthPoll = null;
 let hearthPollBusy = false;
+let hearthIdentityBusy = false;  // guards overlapping identity re-fetches
 
 async function init() {
   const [actResp, cfgResp, portsResp, midiResp, ctrlResp, statusResp, aboutResp] = await Promise.all([
@@ -746,6 +747,17 @@ function renderHearthStatus() {
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
   document.getElementById('psState').textContent = describePowerSave(s.powersave);
+  if (!hearthIdentity && s.source !== 'unreachable' && !hearthIdentityBusy) {
+    hearthIdentityBusy = true;
+    fetchHearthIdentity({
+      url: document.getElementById('hearthUrl').value.trim(),
+      replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+      token: document.getElementById('hearthToken').value
+    }).then(() => {
+      hearthIdentityBusy = false;
+      renderHearthControls();
+    });
+  }
   renderHearthControls();
 }
 
