@@ -46,6 +46,10 @@ internal/
     config.go                # AppConfig, load/save, ListSerialPorts
     actions.go               # ActionRegistry, ActionDef
     about.go                 # Version, contributors
+  hearth/                    # lempster-hearth control client (stdlib only)
+    client.go                # Client, errors, Pi→replica fallback, WhoAmI
+    status.go                # Status (K4 + power-save), replica merge
+    control.go               # K4Power, SetPowerSave
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
     webui.html               # Single-page web UI (go:embed)
