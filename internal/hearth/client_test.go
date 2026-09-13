@@ -75,6 +75,23 @@ func TestWhoAmINotConfigured(t *testing.T) {
 	}
 }
 
+func TestWhoAmIRedirectNamesLocation(t *testing.T) {
+	const location = "https://example.invalid/api/whoami"
+	pi := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/whoami": redirectReply(http.StatusFound, location),
+	})
+	c := &Client{PiURL: pi.URL, Token: "tok"}
+
+	_, err := c.WhoAmI(context.Background())
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status != http.StatusFound {
+		t.Fatalf("err = %v, want HTTPError 302", err)
+	}
+	if !strings.Contains(err.Error(), location) {
+		t.Errorf("Error() = %q, want it to name %s", err.Error(), location)
+	}
+}
+
 func TestURLWithoutSchemeIsNotATransportFailure(t *testing.T) {
 	replica := newFakeHearth(t, map[string]http.HandlerFunc{
 		"GET /api/whoami": jsonReply(operatorJSON),
