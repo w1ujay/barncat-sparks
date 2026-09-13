@@ -52,6 +52,7 @@ internal/
     control.go               # K4Power, SetPowerSave
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
+    hearth.go                # /api/hearth/* — hearth status + K4/power-save controls
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)
     gui_other.go             # waitForGUI (app-mode browser)
@@ -75,11 +76,12 @@ N1MM Logger ↔ TCP ↔ CATServer (cat/) ──→ CATClient ──→ serial �
 
 ```
 cmd/barncat-sparks  →  webui, cat, keyer, midi, config
-webui               →  cat, keyer, midi, config
+webui               →  cat, keyer, midi, config, hearth
 config              →  midi  (for MIDIConfig/MIDIMapping in ToMIDIConfig)
 keyer               →  cat
 midi                →  cat
 cat                 →  (stdlib only)
+hearth              →  (stdlib only)
 ```
 
 ### Key Components
