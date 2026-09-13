@@ -25,10 +25,10 @@ type CATClient struct {
 	decodeCh  chan string // dedicated channel for TT (text decode) responses
 	queryMu   sync.Mutex  // serializes query transactions on respCh (drain, send, await)
 
-	// Response relays — all responses are broadcast to every writer in this list
-	// (used by CATServer to forward responses to multiple TCP clients).
+	// Response relays — every response is queued to each relay's own writer
+	// goroutine (used by CATServer to forward responses to TCP clients); see relay.go.
 	relayMu sync.Mutex
-	relays  []io.Writer
+	relays  []*relay
 }
 
 // NewCATClient creates a new CATClient. Call ConnectTCP or ConnectSerial to connect.
@@ -112,26 +112,6 @@ func (c *CATClient) ConnectK4(addr, password string) error {
 	return nil
 }
 
-// AddRelay adds an io.Writer that receives copies of all radio responses.
-// Used by CATServer to broadcast to multiple TCP clients.
-func (c *CATClient) AddRelay(w io.Writer) {
-	c.relayMu.Lock()
-	c.relays = append(c.relays, w)
-	c.relayMu.Unlock()
-}
-
-// RemoveRelay removes an io.Writer from the relay list.
-func (c *CATClient) RemoveRelay(w io.Writer) {
-	c.relayMu.Lock()
-	for i, r := range c.relays {
-		if r == w {
-			c.relays = append(c.relays[:i], c.relays[i+1:]...)
-			break
-		}
-	}
-	c.relayMu.Unlock()
-}
-
 func (c *CATClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,12 +136,8 @@ func (c *CATClient) readLoop() {
 		if resp == "" {
 			continue
 		}
-		// Broadcast to all CATServer TCP clients
-		c.relayMu.Lock()
-		for _, w := range c.relays {
-			fmt.Fprintf(w, "%s;", resp)
-		}
-		c.relayMu.Unlock()
+		// Queue for CATServer TCP clients; never blocks on a slow client.
+		c.broadcast(resp)
 
 		// Route TT (text decode) responses to dedicated channel
 		if strings.HasPrefix(resp, "TT") {
