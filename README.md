@@ -18,7 +18,7 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.27+
 - A virtual serial port pair (for WinKeyer mode):
   - **Windows:** [com0com](https://com0com.sourceforge.net/)
   - **Linux:** `socat`

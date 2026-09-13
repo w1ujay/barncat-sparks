@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - MIDI device selector changed from add/remove dropdowns to checkboxes of available devices — check which devices to connect, uncheck to skip
 - RadioServer HTTP routing refactored from single handler to `http.ServeMux` with `Handle()` method for registering multiple HTTP handlers on the same port
+- Go 1.27 (`go 1.27.0`, toolchain `go1.27.1`); `go.bug.st/serial` v1.8.0 and `golang.org/x/sys` v0.48.0 (fixes GO-2026-5024); `creack/goselect` no longer needed
 
 ### Fixed
 - WinKeyer status byte is sent only when it changes, and Host Open replies with only the version byte — N1MM no longer reads a stray idle status at message start as "message complete" and drops text
