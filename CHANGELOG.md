@@ -37,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - RadioServer recognizes HTTP requests whose first bytes arrive in separate reads instead of treating them as CAT
 - Stop and N1MM's clear buffer (Esc) no longer let a CW `KY` already in flight reach the radio after the abort `RX;`
 - After an RTTY message finishes, Stop and the next clear buffer no longer send a stray `RX;` that could unkey another transmission
+- MIDI PTT press and release reach the radio in order, so a quick tap can no longer leave the K4 transmitting
+- Stopping MIDI while a PTT pad is held releases PTT before the CAT link closes, and a press arriving during shutdown no longer keys the radio
+- A CATServer client that stops reading no longer stalls radio responses for queries, text decode and other clients — it is disconnected instead
 
 ## [0.2.1] - 2026-02-26
 
