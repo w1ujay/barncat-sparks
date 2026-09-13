@@ -285,10 +285,12 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		w.wk = keyer.NewWinkeyer(w.cat)
 		w.wk.SetWPM(w.config.KeyerSpeed)
 		if err := w.wk.OpenSerial(w.config.SerialPort); err != nil {
-			w.statusMsg = fmt.Sprintf("Serial error: %v", err)
-			w.cat.Close()
-			w.cat = nil
+			// Fatal: roll back everything started above (servers, wattmeter,
+			// CAT) so a retry can bind the same listen addresses.
+			msg := fmt.Sprintf("Serial error: %v", err)
 			w.wk = nil
+			w.stopLocked()
+			w.statusMsg = msg
 			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 			return
 		}
