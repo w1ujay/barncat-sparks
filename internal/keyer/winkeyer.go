@@ -424,7 +424,9 @@ func (w *Winkeyer) execCommand() {
 			w.rttyDoneCancel()
 			w.rttyDoneCancel = nil
 		}
-		w.clearBuffer()
+		if w.clearBuffer() {
+			w.sendStatusLocked()
+		}
 		log.Printf("WK: clear buffer")
 		if wasRTTYBracket || hadPendingRTTY {
 			w.cat.SendAbort()
@@ -713,9 +715,13 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	}
 }
 
-// clearBuffer aborts CW and resets buffer state.
+// clearBuffer aborts CW and resets buffer state. It returns true if the status
+// byte changed; the caller decides whether to report it. WK3 only sends status
+// on a change, and Host Open must reply with nothing but the version byte —
+// N1MM treats a stray idle status at message start as "message complete".
 // Must be called with w.mu held.
-func (w *Winkeyer) clearBuffer() {
+func (w *Winkeyer) clearBuffer() bool {
+	prevStatus := w.statusByteLocked()
 	if w.trace {
 		log.Printf("WK trace: clear (was %d chars)", w.bufLen-w.readPos)
 	}
@@ -741,7 +747,7 @@ func (w *Winkeyer) clearBuffer() {
 		// PTT off handled by caller (execCommand 0x0A or execAdmin reset)
 	}
 	w.rttyBuf = nil
-	w.sendStatusLocked()
+	return w.statusByteLocked() != prevStatus
 }
 
 // handleRTTYChar processes a character in RTTY/FSK mode.
@@ -878,8 +884,8 @@ func (w *Winkeyer) updateXoff() {
 	}
 }
 
-// sendStatusLocked sends a status byte. Must be called with w.mu held.
-func (w *Winkeyer) sendStatusLocked() {
+// statusByteLocked returns the current status byte. Must be called with w.mu held.
+func (w *Winkeyer) statusByteLocked() byte {
 	status := byte(0xC0)
 	if w.busy {
 		status |= StatusBusy
@@ -890,6 +896,12 @@ func (w *Winkeyer) sendStatusLocked() {
 	if w.tuning {
 		status |= StatusKeyDown
 	}
+	return status
+}
+
+// sendStatusLocked sends a status byte. Must be called with w.mu held.
+func (w *Winkeyer) sendStatusLocked() {
+	status := w.statusByteLocked()
 	if w.trace {
 		log.Printf("WK trace: tx status 0x%02x", status)
 	}

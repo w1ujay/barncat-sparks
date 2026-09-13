@@ -512,3 +512,71 @@ func drainPort(p *testPort, timeout time.Duration) {
 		}
 	}
 }
+
+// --- Status Byte Protocol Tests ---
+//
+// WK3 datasheet: a status byte is sent only when the internal status register
+// changes, and Host Open responds with only the revision code. N1MM treats an
+// idle status while it is starting a message as "message complete" (it unkeys
+// and can drop the text it has not yet written), so spurious idle bytes break it.
+
+// expectNoByte fails if any byte is written to the test port within d.
+func expectNoByte(t *testing.T, p *testPort, d time.Duration) {
+	t.Helper()
+	select {
+	case b := <-p.written:
+		t.Fatalf("unexpected byte 0x%02x written to host", b)
+	case <-time.After(d):
+	}
+}
+
+func TestClearBufferWhenIdleSendsNoStatus(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+
+	wk.processByte(0x0A) // clear buffer while already idle
+
+	expectNoByte(t, tp, 150*time.Millisecond)
+}
+
+func TestClearBufferWhileBusySendsIdleStatus(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 5
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	expectStatus(t, tp, true)
+
+	wk.processByte(0x0A) // abort: busy -> idle is a real status change
+	expectStatus(t, tp, false)
+}
+
+func TestHostOpenSendsOnlyVersion(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+	wk.hostOpen = false
+
+	wk.processByte(0x00)
+	wk.processByte(0x02) // host open
+
+	if b := readByte(t, tp, time.Second); b != WKVersion {
+		t.Fatalf("host open: first byte 0x%02x, want version 0x%02x", b, WKVersion)
+	}
+	expectNoByte(t, tp, 150*time.Millisecond)
+}
+
+// TestN1MMMessageStartNoSpuriousIdle replays the byte sequence N1MM sends for
+// an F-key message (captured in docs/wk-trace): clear buffer, pointer reset,
+// pointer append at 0, buffered speed, then the text.
+func TestN1MMMessageStartNoSpuriousIdle(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+
+	for _, b := range []byte{0x0A, 0x16, 0x00, 0x16, 0x02, 0x00, 0x1C, 0x17, '?'} {
+		wk.processByte(b)
+	}
+
+	// The first byte back must be the busy status for the new message,
+	// not an idle status from the clear buffer.
+	expectStatus(t, tp, true)
+	expectCmd(t, cmds, "KS023")
+	expectCmd(t, cmds, "KY ?")
+}
