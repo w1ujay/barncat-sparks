@@ -769,7 +769,7 @@ function renderHearthControls() {
   const ps = s && s.powersave;
 
   const k4ok = canUseHearth('k4') && onPi && !!k4;
-  document.getElementById('k4OnBtn').disabled = !(k4ok && k4.card_state === 'off' && k4.power_relay);
+  document.getElementById('k4OnBtn').disabled = !(k4ok && k4.power_relay && k4.card_state !== 'on');
   document.getElementById('k4OffBtn').disabled = !(k4ok && k4.card_state === 'on');
 
   const psBtn = document.getElementById('psBtn');
