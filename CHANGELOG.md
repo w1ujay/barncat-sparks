@@ -24,6 +24,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - MIDI device selector changed from add/remove dropdowns to checkboxes of available devices — check which devices to connect, uncheck to skip
 - RadioServer HTTP routing refactored from single handler to `http.ServeMux` with `Handle()` method for registering multiple HTTP handlers on the same port
 
+### Fixed
+- WinKeyer status byte is sent only when it changes, and Host Open replies with only the version byte — N1MM no longer reads a stray idle status at message start as "message complete" and drops text
+- Stopping mid-transmission releases the radio: CW in progress is aborted and RTTY/tune PTT is dropped before the CAT link closes
+- CW input no longer stops after 64 characters when the logger never clears the buffer — the WinKeyer buffer is reclaimed once drained
+- A connection arriving while CATServer or RadioServer shuts down is closed instead of crashing the app
+- Concurrent radio queries (RadioServer clients, MIDI VFO tuning) no longer time out by taking each other's replies
+- A WinKeyer port failure during Start now stops CATServer, RadioServer, and the LP-100A, so a retry can bind the same ports
+- RadioServer recognizes HTTP requests whose first bytes arrive in separate reads instead of treating them as CAT
+
 ## [0.2.1] - 2026-02-26
 
 ### Added
