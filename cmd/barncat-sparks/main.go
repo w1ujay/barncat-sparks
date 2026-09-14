@@ -87,6 +87,12 @@ func main() {
 	webui.RunWebUI(cfgPath)
 }
 
+// hasHeadlessWork reports whether headless mode has anything to run: a
+// WinKeyer port, a MIDI device, or a CATServer or RadioServer on its own.
+func hasHeadlessWork(portName, midiDevice, catListen, radioListen string) bool {
+	return portName != "" || midiDevice != "" || catListen != "" || radioListen != ""
+}
+
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
 	catTransport, catSerialPort string, catBaud int, catPassword string, catListen, radioListen string) {
 	// Load config for defaults if CLI flags are sparse
@@ -130,7 +136,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		midiConfigPath = "midi-config.json"
 	}
 
-	if portName == "" && midiDevice == "" {
+	if !hasHeadlessWork(portName, midiDevice, catListen, radioListen) {
 		fmt.Fprintln(os.Stderr, "BarnCat Sparks - WinKeyer emulator & MIDI controller for K4")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Usage: barncat-sparks                                        # Launch web UI")
