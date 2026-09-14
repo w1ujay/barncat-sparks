@@ -53,7 +53,7 @@ internal/
     wol.go                   # WolTargets, Wake (Pi-only wake-on-LAN)
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
-    hearth.go                # /api/hearth/* — hearth status + K4/power-save controls
+    hearth.go                # /api/hearth/* — hearth status + K4/power-save/WoL controls
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)
     gui_other.go             # waitForGUI (app-mode browser)
