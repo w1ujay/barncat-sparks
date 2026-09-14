@@ -66,8 +66,16 @@ details summary:hover{color:#569cd6}
 .midi-device-list input[type="checkbox"]{width:auto;margin-right:6px}
 .inline-row{display:flex;gap:6px}
 .inline-row input{flex:1}
-.station-row{display:grid;grid-template-columns:100px 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
-.station-label{font-size:0.85em;color:#9cdcfe}
+[hidden]{display:none!important}
+a{color:#569cd6}
+.tabs{display:flex;gap:6px;border-bottom:1px solid #333;padding-bottom:6px;margin-bottom:14px}
+.tabs button{background:#333;color:#ccc}
+.tabs button:hover{background:#444}
+.tabs button.active{background:none;color:#569cd6;box-shadow:inset 0 -2px 0 #569cd6}
+.save-msg{font-size:0.85em;color:#888;align-self:center}
+.save-msg.error{color:#f48771}
+.station-row{display:grid;grid-template-columns:130px 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
+.station-label{font-size:0.85em;color:#9cdcfe;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .station-value{font-size:0.9em}
 .station-source{font-size:0.85em;color:#888;margin:8px 0}
 .station-source.live{color:#4ec9b0}
@@ -80,14 +88,43 @@ details summary:hover{color:#569cd6}
 
 <h1 id="appTitle">BarnCat Sparks — WinKeyer &amp; MIDI Controller</h1>
 
+<nav class="tabs">
+  <button id="tabOperate" class="active" onclick="showTab('operate')">Operate</button>
+  <button id="tabSettings" onclick="showTab('settings')">Settings</button>
+</nav>
+
+<div id="operateView">
+
 <div class="btn-bar">
   <button id="startBtn" onclick="doStart()">Start</button>
   <button id="stopBtn" onclick="doStop()" disabled>Stop</button>
-  <div class="spacer"></div>
-  <button onclick="doSave()">Save Settings</button>
 </div>
 
 <div class="status-bar" id="statusBar">Status: Stopped</div>
+
+<h2>Station</h2>
+<div class="station-note" id="stationHint" hidden>
+  No hearth configured. <a href="#" onclick="showTab('settings'); return false">Set up hearth in Settings</a>
+</div>
+<div id="stationPanel" hidden>
+  <div class="station-source" id="stationSource">—</div>
+  <div class="station-row">
+    <span class="station-label">K4</span>
+    <span class="station-value" id="k4State">—</span>
+    <button id="k4OnBtn" onclick="k4Power('on')" disabled>On</button>
+    <button id="k4OffBtn" class="danger" onclick="k4Power('off')" disabled>Off</button>
+  </div>
+  <div class="station-row">
+    <span class="station-label">Power-save</span>
+    <span class="station-value" id="psState">—</span>
+    <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
+  </div>
+  <div class="station-note" id="stationMsg"></div>
+</div>
+
+</div>
+
+<div id="settingsView" hidden>
 
 <h2>Connection</h2>
 <div class="form-row">
@@ -153,7 +190,7 @@ details summary:hover{color:#569cd6}
   <input id="keyerSpeed" type="number" min="5" max="99" placeholder="25">
 </div>
 
-<h2>Station</h2>
+<h2>Station setup</h2>
 <div class="form-row">
   <label for="hearthUrl">Hearth URL</label>
   <input id="hearthUrl" type="text" placeholder="http://hearth.example:8123">
@@ -174,21 +211,6 @@ details summary:hover{color:#569cd6}
   </div>
 </div>
 <div class="station-note" id="hearthIdentity"></div>
-<div id="stationPanel" style="display:none">
-  <div class="station-source" id="stationSource">—</div>
-  <div class="station-row">
-    <span class="station-label">K4</span>
-    <span class="station-value" id="k4State">—</span>
-    <button id="k4OnBtn" onclick="k4Power('on')" disabled>On</button>
-    <button id="k4OffBtn" class="danger" onclick="k4Power('off')" disabled>Off</button>
-  </div>
-  <div class="station-row">
-    <span class="station-label">Power-save</span>
-    <span class="station-value" id="psState">—</span>
-    <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
-  </div>
-  <div class="station-note" id="stationMsg"></div>
-</div>
 
 <h2>MIDI</h2>
 <div id="midiDevicesContainer"></div>
@@ -226,7 +248,14 @@ details summary:hover{color:#569cd6}
 </div>
 -->
 
+<div class="btn-bar">
+  <button onclick="doSave()">Save Settings</button>
+  <span class="save-msg" id="saveMsg"></span>
+</div>
+
 <div class="about" id="aboutSection"></div>
+
+</div>
 
 <script>
 let actions = [];
@@ -306,6 +335,22 @@ async function rescanMIDI() {
   const resp = await fetch('/api/midi-devices');
   availableMIDIDevices = await resp.json();
   renderMIDIDevices();
+}
+
+// showTab switches between the Operate and Settings views. Both stay in the
+// document, so gatherConfig() reads the Settings inputs even while hidden.
+function showTab(name) {
+  const operate = name === 'operate';
+  document.getElementById('operateView').hidden = !operate;
+  document.getElementById('settingsView').hidden = operate;
+  document.getElementById('tabOperate').className = operate ? 'active' : '';
+  document.getElementById('tabSettings').className = operate ? '' : 'active';
+}
+
+function setSaveMsg(text, isError) {
+  const el = document.getElementById('saveMsg');
+  el.className = 'save-msg' + (isError ? ' error' : '');
+  el.textContent = text;
 }
 
 function populateSelect(id, items, selected, placeholder) {
@@ -538,11 +583,11 @@ async function doSave() {
     body: JSON.stringify(cfg)
   });
   if (resp.ok) {
-    setStatus(false, 'Settings saved');
+    setSaveMsg('Settings saved', false);
     startHearth(cfg.hearth_url);
   } else {
     const text = await resp.text();
-    setStatus(false, 'Save failed: ' + text);
+    setSaveMsg('Save failed: ' + text, true);
   }
 }
 
@@ -626,12 +671,9 @@ function startHearth(url) {
   hearthStatus = null;
   hearthIdentity = null;
   resetStationView();
-  const panel = document.getElementById('stationPanel');
-  if (!url) {
-    panel.style.display = 'none';
-    return;
-  }
-  panel.style.display = '';
+  document.getElementById('stationPanel').hidden = !url;
+  document.getElementById('stationHint').hidden = !!url;
+  if (!url) return;
   fetchHearthIdentity({
     url: url,
     replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
@@ -805,19 +847,45 @@ function effectiveArmed(s) {
   return !!ps.armed;
 }
 
+// controlBlocker says why a station control can't be used right now, or ''
+// when nothing outside the control's own state blocks it. The reason becomes
+// the disabled button's tooltip: the identity line lives on Settings, so
+// without it nothing on Operate says why a button is greyed out.
+function controlBlocker(scope, piOnly) {
+  const s = hearthStatus;
+  if (!s) return 'waiting for hearth';
+  if (s.source === 'unreachable') return 'hearth is unreachable';
+  if (piOnly && s.source !== 'pi') return 'the cabin is dark — this needs the Pi';
+  if (!hearthIdentity) return 'token not verified — use Test in Settings';
+  if (!canUseHearth(scope)) return 'token lacks the "' + scope + '" scope';
+  return '';
+}
+
+// setControl enables btn only when nothing blocks it and its own state allows
+// it, and titles it with whichever reason applies.
+function setControl(btn, blocker, stateOk, stateReason) {
+  btn.disabled = !!blocker || !stateOk;
+  btn.title = blocker || (stateOk ? '' : stateReason);
+}
+
 function renderHearthControls() {
   const s = hearthStatus;
-  const onPi = !!s && s.source === 'pi';
   const onReplica = !!s && s.source === 'replica';
   const k4 = s && s.k4;
   const ps = s && s.powersave;
 
-  const k4ok = canUseHearth('k4') && onPi && !!k4;
-  document.getElementById('k4OnBtn').disabled = !(k4ok && k4.power_relay && k4.card_state !== 'on');
-  document.getElementById('k4OffBtn').disabled = !(k4ok && k4.card_state === 'on');
+  let k4Block = controlBlocker('k4', true);
+  if (!k4Block && !k4) k4Block = 'hearth reports no K4';
+  setControl(document.getElementById('k4OnBtn'),
+    k4Block || (k4.power_relay ? '' : 'no power relay configured'),
+    !!k4 && k4.card_state !== 'on', 'the K4 is already on');
+  setControl(document.getElementById('k4OffBtn'), k4Block,
+    !!k4 && k4.card_state === 'on', 'the K4 is not on');
 
   const psBtn = document.getElementById('psBtn');
-  psBtn.disabled = !(canUseHearth('powersave') && (onPi || onReplica) && ps && ps.enabled);
+  let psBlock = controlBlocker('powersave', false);
+  if (!psBlock && !(ps && ps.enabled)) psBlock = 'power-save is not enabled at the cabin';
+  setControl(psBtn, psBlock, true, '');
   const verb = effectiveArmed(s) ? 'disarm' : 'arm';
   psBtn.textContent = onReplica ? 'Queue ' + verb : verb.charAt(0).toUpperCase() + verb.slice(1);
   psBtn.className = verb === 'arm' ? 'danger' : '';
