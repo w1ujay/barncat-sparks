@@ -246,6 +246,7 @@ func (d *MIDIDriver) handleDisconnect(handle uintptr, disconnected *[]string, ti
 	for i, dev := range d.devices {
 		if dev.handle == handle {
 			log.Printf("MIDI: device %q disconnected", dev.name)
+			d.deviceDisconnected(dev.name)
 			*disconnected = append(*disconnected, dev.name)
 			d.devices = append(d.devices[:i], d.devices[i+1:]...)
 			// Start reconnect ticker if not already running.
