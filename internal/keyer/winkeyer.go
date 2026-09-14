@@ -183,6 +183,12 @@ func (w *Winkeyer) processByte(b byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Close has released everything the keyer held. A byte Run read before the
+	// port finished closing must not key the radio again.
+	if w.closed {
+		return
+	}
+
 	if w.trace {
 		if b >= 0x20 && b <= 0x7E {
 			log.Printf("WK trace: rx 0x%02x '%c' (state=%s)", b, b, stateName(w.state))
