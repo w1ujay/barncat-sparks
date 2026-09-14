@@ -166,6 +166,21 @@ func (d *MIDIDriver) releasePTT() {
 	}
 }
 
+// deviceDisconnected is called when a controller goes away (USB unplug). It
+// unkeys the radio if MIDI keyed it, because the pad's release event can never
+// arrive. pttOn doesn't record which device keyed it, so any disconnect
+// releases it; unkeying is the safe side. Unlike releasePTT, the driver stays
+// open, so the pads key the radio again once the device reconnects.
+func (d *MIDIDriver) deviceDisconnected(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pttOn {
+		log.Printf("MIDI: releasing PTT, device %q disconnected", name)
+		d.pttOn = false
+		d.cat.SetPTT(false)
+	}
+}
+
 // optFloat returns a float64 option from a mapping's opts map, or the fallback.
 func optFloat(opts map[string]any, key string, fallback float64) float64 {
 	if opts == nil {
