@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ujay/barncat-sparks/internal/cat"
+	"github.com/ujay/barncat-sparks/internal/controls"
 )
 
 var (
@@ -60,48 +60,22 @@ type openDevice struct {
 	handle uintptr
 }
 
-// MIDIDriver connects to a MIDI device and dispatches actions to the K4.
+// MIDIDriver connects to MIDI devices and hands their messages to an executor.
 type MIDIDriver struct {
-	mu        sync.Mutex
 	closeOnce sync.Once
-	cat       cat.Radio
-	volumeCat cat.Radio // optional: route volume commands here (e.g. QK4)
+	exec      *controls.Executor
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
-	pttOn     bool
-	closed    bool // set by Close under mu; PTT is never keyed after it
 	done      chan struct{}
 	events    chan midiEvent
 	devices   []openDevice // active devices
 	cb        uintptr      // Windows callback (reused for reconnect)
-
-	// VFO tuning state (accessed only from event loop goroutine)
-	vfoFreq     int
-	vfoKnown    bool
-	lastTuneAt  time.Time
-	vfoBFreq    int
-	vfoBKnown   bool
-	lastTuneBAt time.Time
-
-	// Toggle state for button actions (accessed only from event loop goroutine)
-	ritOn    bool
-	xitOn    bool
-	nbOn     bool
-	nrOn     bool
-	splitOn  bool
-	notchOn  bool
-	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
-	filterBW int // current filter BW in Hz (0 = unknown, default 500)
-
-	// RF gain state (accessed only from event loop goroutine)
-	rfGain  int // main RX attenuation level (0-60, 0=full gain)
-	rfGainB int // sub RX attenuation level
 }
 
-// NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(c cat.Radio, config *MIDIConfig) *MIDIDriver {
+// NewMIDIDriver creates a new MIDI driver that runs mapped actions on exec.
+func NewMIDIDriver(exec *controls.Executor, config *MIDIConfig) *MIDIDriver {
 	return &MIDIDriver{
-		cat:    c,
+		exec:   exec,
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),
@@ -246,7 +220,7 @@ func (d *MIDIDriver) handleDisconnect(handle uintptr, disconnected *[]string, ti
 	for i, dev := range d.devices {
 		if dev.handle == handle {
 			log.Printf("MIDI: device %q disconnected", dev.name)
-			d.deviceDisconnected(dev.name)
+			d.exec.DeviceLost(dev.name)
 			*disconnected = append(*disconnected, dev.name)
 			d.devices = append(d.devices[:i], d.devices[i+1:]...)
 			// Start reconnect ticker if not already running.
@@ -296,13 +270,11 @@ func (d *MIDIDriver) findDevice(name string, count uintptr) int {
 	return -1
 }
 
-// Close shuts down the MIDI driver and releases all open devices. A PTT that
-// MIDI still holds is released first, before the web UI closes the CAT link;
-// the pad's own release event will never be processed.
+// Close shuts down the MIDI driver and releases all open devices. Releasing a
+// held PTT is the executor's job; close the executor after the driver.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
 		close(d.done)
-		d.releasePTT()
 		for _, dev := range d.devices {
 			midiInStop.Call(dev.handle)
 			midiInReset.Call(dev.handle)
