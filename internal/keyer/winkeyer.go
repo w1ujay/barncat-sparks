@@ -601,9 +601,15 @@ func (w *Winkeyer) bufferChar(ch byte) {
 	ch = byte(unicode.ToUpper(rune(ch)))
 
 	w.reclaimDrainedBuffer()
-	// The limit is BufferSize characters not yet sent. A write behind readPos
-	// is too late to send and would land on a reused slot.
-	if w.writePos < w.readPos || w.writePos-w.readPos >= BufferSize {
+	// An overwrite at a position sendLoop has already taken is too late to
+	// send, and its slot may be reused. Skip the write but advance the
+	// pointer, so the rest of the correction lands on unsent positions.
+	if w.writePos < w.readPos {
+		w.writePos++
+		return
+	}
+	// The limit is BufferSize characters not yet sent.
+	if w.writePos-w.readPos >= BufferSize {
 		return // Buffer full, drop character
 	}
 
