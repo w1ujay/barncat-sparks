@@ -21,8 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - QK4 volume routing — optional checkbox to route MIDI volume commands to a local QK4 instance instead of the direct K4 connection, with configurable address (default `127.0.0.1:9299`)
 - Station section in the web UI — shows the cabin K4's power state and Starlink power-save via lempster-hearth, with K4 On/Off and power-save Arm/Disarm; authenticates with a per-operator hearth token (`hearth_url`, `hearth_replica_url`, `hearth_token`)
 - Replica fallback for the Station — when the cabin Pi is unreachable, status comes from the hosted replica and power-save changes are queued for the cabin's next check-in; set the Station's Site (`hearth_site`, e.g. `cabin`) when the replica is a multi-site hub
+- Laptop wake from the web UI — the Station card lists hearth's wake-on-LAN targets with awake/asleep status and a Wake button (needs the hearth `wol` operator scope); status is polled every 60s while Operate is visible and every 5s for up to 5 minutes after a wake
 
 ### Changed
+- Web UI split into Operate and Settings tabs — Start/Stop, status and the station controls (K4, power-save, laptop) are on Operate; all configuration and Save Settings are on Settings
 - MIDI device selector changed from add/remove dropdowns to checkboxes of available devices — check which devices to connect, uncheck to skip
 - RadioServer HTTP routing refactored from single handler to `http.ServeMux` with `Handle()` method for registering multiple HTTP handlers on the same port
 - Go 1.27 (`go 1.27.0`, toolchain `go1.27.1`); `go.bug.st/serial` v1.8.0 and `golang.org/x/sys` v0.48.0 (fixes GO-2026-5024); `creack/goselect` no longer needed

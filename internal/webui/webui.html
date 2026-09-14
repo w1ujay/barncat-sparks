@@ -119,6 +119,7 @@ a{color:#569cd6}
     <span class="station-value" id="psState">—</span>
     <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
   </div>
+  <div id="laptopRows"></div>
   <div class="station-note" id="stationMsg"></div>
 </div>
 
@@ -345,6 +346,7 @@ function showTab(name) {
   document.getElementById('settingsView').hidden = operate;
   document.getElementById('tabOperate').className = operate ? 'active' : '';
   document.getElementById('tabSettings').className = operate ? '' : 'active';
+  if (operate) wolTick();
 }
 
 function setSaveMsg(text, isError) {
@@ -670,6 +672,10 @@ function startHearth(url) {
   hearthGen++;
   hearthStatus = null;
   hearthIdentity = null;
+  wolTargets = [];
+  wolFetchedAt = 0;
+  wolWaking = {};
+  if (wolTimer) { clearInterval(wolTimer); wolTimer = null; }
   resetStationView();
   document.getElementById('stationPanel').hidden = !url;
   document.getElementById('stationHint').hidden = !!url;
@@ -681,6 +687,7 @@ function startHearth(url) {
   }).then(renderHearthControls);
   pollHearth();
   hearthPoll = setInterval(pollHearth, 10000);
+  wolTimer = setInterval(wolTick, WOL_WAKE_POLL_MS);
 }
 
 // resetStationView blanks what was shown for the previous station and
@@ -834,6 +841,11 @@ function renderHearthStatus() {
       renderHearthControls();
     });
   }
+  if (s.source !== 'pi') {
+    wolWaking = {}; // no Pi, no wake to watch
+  } else if (wolFetchedAt === 0) {
+    fetchWol(); // first Pi status for this station
+  }
   renderHearthControls();
 }
 
@@ -889,6 +901,7 @@ function renderHearthControls() {
   const verb = effectiveArmed(s) ? 'disarm' : 'arm';
   psBtn.textContent = onReplica ? 'Queue ' + verb : verb.charAt(0).toUpperCase() + verb.slice(1);
   psBtn.className = verb === 'arm' ? 'danger' : '';
+  renderLaptopRows();
 }
 
 function setStationMsg(text, isError) {
@@ -959,6 +972,128 @@ async function togglePowerSave() {
   }
   pollHearth();
 }
+
+// --- Laptop wake (hearth wake-on-LAN) ---
+// Hearth answers each WoL status by running tailscale and a ping on the Pi, so
+// it is polled apart from the 10s station poll: every 60s while Operate is on
+// screen, every 5s while a wake is in progress, and never while the cabin is
+// dark. Target names come from hearth and are rendered with textContent.
+
+const WOL_POLL_MS = 60000;
+const WOL_WAKE_POLL_MS = 5000;
+const WOL_WAKE_WINDOW_MS = 5 * 60 * 1000; // hearth's own window: a cold boot from S5 takes 2-4 min
+
+let wolTargets = [];    // last targets from /api/hearth/wol for this station
+let wolFetchedAt = 0;   // Date.now() when the last fetch finished; 0 = never
+let wolFetchGen = null; // generation whose fetch is in flight
+let wolWaking = {};     // name -> {until: ms, failed: bool}
+let wolTimer = null;
+
+function operateOnScreen() {
+  return !document.getElementById('operateView').hidden && document.visibilityState === 'visible';
+}
+
+function waking(name) {
+  const w = wolWaking[name];
+  return !!w && !w.failed;
+}
+
+// expireWakes turns a wake whose window ran out into "didn't come up".
+function expireWakes() {
+  let changed = false;
+  for (const w of Object.values(wolWaking)) {
+    if (!w.failed && Date.now() >= w.until) {
+      w.failed = true;
+      changed = true;
+    }
+  }
+  if (changed) renderLaptopRows();
+}
+
+// wolTick runs every 5s, and whenever Operate or the browser tab becomes
+// visible again. It fetches only when the Pi is the source and a fetch is due.
+function wolTick() {
+  expireWakes();
+  if (!hearthStatus || hearthStatus.source !== 'pi') return;
+  const anyWaking = Object.keys(wolWaking).some(waking);
+  if (!anyWaking && !operateOnScreen()) return;
+  const due = anyWaking ? WOL_WAKE_POLL_MS : WOL_POLL_MS;
+  if (Date.now() - wolFetchedAt < due - 500) return;
+  fetchWol();
+}
+
+async function fetchWol() {
+  const gen = hearthGen;
+  if (wolFetchGen === gen) return; // this station's fetch is already in flight
+  wolFetchGen = gen;
+  let res;
+  try {
+    const resp = await fetch('/api/hearth/wol');
+    res = await resp.json();
+  } catch (e) {
+    res = {error: e.message};
+  } finally {
+    if (wolFetchGen === gen) wolFetchGen = null;
+  }
+  if (gen !== hearthGen) return; // the station changed; these targets are for the old one
+  wolFetchedAt = Date.now();
+  if (res.error) {
+    // Keep the rows but mark them unknown: a failed read is never "asleep".
+    wolTargets = wolTargets.map(t => ({name: t.name, online: null, source: 'none'}));
+  } else {
+    wolTargets = res.targets || [];
+    for (const t of wolTargets) {
+      if (t.online === true) delete wolWaking[t.name];
+    }
+  }
+  renderLaptopRows();
+}
+
+function describeLaptop(t) {
+  if (!hearthStatus || hearthStatus.source !== 'pi') return 'unknown'; // no Pi, no WoL: never the replica
+  if (t.online === true) return 'awake';
+  const w = wolWaking[t.name];
+  if (w) return w.failed ? "didn't come up" : 'waking…';
+  if (t.online === false) return 'asleep';
+  return 'unknown';
+}
+
+function renderLaptopRows() {
+  const box = document.getElementById('laptopRows');
+  box.replaceChildren();
+  for (const t of wolTargets) {
+    const row = document.createElement('div');
+    row.className = 'station-row';
+    const label = document.createElement('span');
+    label.className = 'station-label';
+    label.textContent = t.name;
+    label.title = t.name;
+    const value = document.createElement('span');
+    value.className = 'station-value';
+    value.textContent = describeLaptop(t);
+    row.append(label, value);
+    // Wake is offered only to a token whose whoami allows it; without the
+    // scope hearth answers 403, so there is nothing to press. Status still shows.
+    if (canUseHearth('wol')) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Wake';
+      setControl(btn, controlBlocker('wol', true), !waking(t.name), 'waking — watching for it to come up');
+      btn.onclick = () => wakeLaptop(t.name);
+      row.append(btn);
+    }
+    box.append(row);
+  }
+}
+
+async function wakeLaptop(name) {
+  const res = await hearthPost('/api/hearth/wol', {name: name});
+  if (!res || !res.ok) return; // hearthPost has already shown the error
+  setStationMsg('Wake sent to ' + name, false);
+  wolWaking[name] = {until: Date.now() + WOL_WAKE_WINDOW_MS, failed: false};
+  renderLaptopRows();
+}
+
+document.addEventListener('visibilitychange', wolTick);
 
 init();
 </script>
