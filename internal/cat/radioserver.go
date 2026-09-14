@@ -10,6 +10,10 @@ import (
 	"sync"
 )
 
+// maxCWKYText is the most text a CW sender puts in one KY command (SendKY's
+// limit). RadioServer treats longer KY text as an RTTY message.
+const maxCWKYText = 24
+
 // RadioServer is a protocol-translating TCP server that wraps any Radio
 // interface and serves K4-compatible CAT over TCP. Unlike CATServer (a dumb
 // byte relay tied to *CATClient), RadioServer operates at the semantic level:
@@ -218,9 +222,15 @@ func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 			return nil
 		}
 		text := cmd[3:]
-		if text == "|" {
+		switch {
+		case text == "|":
 			s.radio.SendRTTYEOT()
-		} else {
+		case len(text) > maxCWKYText:
+			// Only RTTY puts more than 24 characters in one KY: CW senders
+			// chunk to 24, and SendRTTYText sends a whole message unchunked.
+			// SendKY would keep just the first 24.
+			s.radio.SendRTTYText(text)
+		default:
 			s.radio.SendKY(text)
 		}
 
