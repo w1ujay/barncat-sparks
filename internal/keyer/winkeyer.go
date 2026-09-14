@@ -52,8 +52,11 @@ type Winkeyer struct {
 	// CW buffer and echo — supports WinKeyer pointer commands for
 	// random-access writes (callsign correction). Null bytes (0x00) are
 	// placeholders inserted by pointer cmd 0x03; sendLoop skips them.
-	buffer   [BufferSize]byte // fixed CW buffer
-	bufLen   int              // high-water mark (bytes written)
+	// Positions are logical and only grow until the buffer is reclaimed.
+	// Position p is stored in buffer[p%BufferSize], so slots sendLoop has
+	// taken are reused and up to BufferSize unsent characters fit.
+	buffer   [BufferSize]byte // ring of CW characters
+	bufLen   int              // high-water mark (logical position after the last byte written)
 	readPos  int              // sendLoop read position
 	writePos int              // next write position for bufferChar
 	busy     bool
@@ -513,11 +516,13 @@ func (w *Winkeyer) execCommand() {
 		case 0x03: // Add nulls (create space for corrections)
 			count := int(w.params[1])
 			end := w.writePos + count
-			if end > BufferSize {
-				end = BufferSize
+			if limit := w.readPos + BufferSize; end > limit {
+				end = limit
 			}
-			for i := w.writePos; i < end; i++ {
-				w.buffer[i] = 0
+			// Never clear below readPos: that slot may already hold a later,
+			// unsent character.
+			for i := max(w.writePos, w.readPos); i < end; i++ {
+				w.buffer[i%BufferSize] = 0
 			}
 			w.writePos = end
 			if end > w.bufLen {
@@ -577,8 +582,8 @@ func (w *Winkeyer) execCommand() {
 }
 
 // reclaimDrainedBuffer rewinds the buffer to position 0 once everything
-// written has been sent, so the 64 bytes are reused instead of filling up for
-// good. It only rewinds when nothing is sending, nothing is left to send, and
+// written has been sent, so a host that resets the pointer or appends at 0
+// addresses the same slots it wrote before. It only rewinds when nothing is sending, nothing is left to send, and
 // writePos is at the end — a pointer command parked mid-buffer for a late
 // overwrite must not make stale characters send again.
 // Must be called with w.mu held.
@@ -596,11 +601,13 @@ func (w *Winkeyer) bufferChar(ch byte) {
 	ch = byte(unicode.ToUpper(rune(ch)))
 
 	w.reclaimDrainedBuffer()
-	if w.writePos >= BufferSize {
+	// The limit is BufferSize characters not yet sent. A write behind readPos
+	// is too late to send and would land on a reused slot.
+	if w.writePos < w.readPos || w.writePos-w.readPos >= BufferSize {
 		return // Buffer full, drop character
 	}
 
-	w.buffer[w.writePos] = ch
+	w.buffer[w.writePos%BufferSize] = ch
 	w.writePos++
 	if w.writePos > w.bufLen {
 		w.bufLen = w.writePos
@@ -680,7 +687,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		// larger chunks reduce inter-KY gaps that cause extra spacing.
 		var chunk []byte
 		for w.readPos < w.bufLen && len(chunk) < KYChunkSize {
-			ch := w.buffer[w.readPos]
+			ch := w.buffer[w.readPos%BufferSize]
 			if ch == 0 {
 				break // stop at null — don't advance past it
 			}
@@ -695,7 +702,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 			// sufficient delay for the host to fill positions via
 			// pointer commands.
 			skipped := false
-			for w.readPos < w.bufLen && w.buffer[w.readPos] == 0 {
+			for w.readPos < w.bufLen && w.buffer[w.readPos%BufferSize] == 0 {
 				w.readPos++
 				skipped = true
 			}
