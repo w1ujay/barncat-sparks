@@ -428,7 +428,9 @@ func (w *Winkeyer) execCommand() {
 				w.bufLen--
 			}
 			w.writePos--
-			w.updateXoff()
+			if w.updateXoff() {
+				w.sendStatusLocked()
+			}
 		}
 
 	case 0x09: // Pin config
@@ -607,7 +609,9 @@ func (w *Winkeyer) bufferChar(ch byte) {
 		log.Printf("WK trace: buffer '%c' @%d (len=%d)", ch, w.writePos-1, w.bufLen)
 	}
 	if w.busy {
-		w.updateXoff()
+		if w.updateXoff() {
+			w.sendStatusLocked()
+		}
 		return
 	}
 	w.startSendLoopLocked()
@@ -712,7 +716,9 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 
 		wpm := w.wpm
 		echoEnabled := w.modeReg&0x04 != 0
-		w.updateXoff()
+		if w.updateXoff() {
+			w.sendStatusLocked()
+		}
 		w.mu.Unlock()
 
 		// Check cancel and send under sendMu, so an abort can't slip in
@@ -961,13 +967,19 @@ func (w *Winkeyer) rttyTxDelay(n int) time.Duration {
 	return time.Duration(float64(n)*msPerChar+1000) * time.Millisecond
 }
 
-func (w *Winkeyer) updateXoff() {
+// updateXoff recomputes XOFF from the characters sendLoop hasn't taken and
+// reports whether it changed. The host pauses while XOFF is set and resumes
+// when it clears, so a caller that doesn't send status anyway must report a
+// change. Must be called with w.mu held.
+func (w *Winkeyer) updateXoff() bool {
+	prev := w.xoff
 	remaining := w.bufLen - w.readPos
 	if remaining >= XoffThreshold {
 		w.xoff = true
 	} else if remaining < XonThreshold {
 		w.xoff = false
 	}
+	return w.xoff != prev
 }
 
 // statusByteLocked returns the current status byte. Must be called with w.mu held.
