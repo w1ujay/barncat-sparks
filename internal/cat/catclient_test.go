@@ -3,7 +3,6 @@ package cat
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"net"
 	"testing"
@@ -206,13 +205,12 @@ func TestSendRTTYText(t *testing.T) {
 	expectCmd(t, cmds, "KY TEST DE W1AW")
 }
 
-func TestSendRTTYTextChunking(t *testing.T) {
+func TestSendRTTYTextLong(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
-	// 30 chars should split into 24 + 6
+	// 30 chars sent as single KY (no chunking — K4 drops back-to-back KYs)
 	c.SendRTTYText("ABCDEFGHIJKLMNOPQRSTUVWXABCDEF")
-	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWX")
-	expectCmd(t, cmds, "KY ABCDEF")
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXABCDEF")
 }
 
 func TestSendRTTYEOT(t *testing.T) {
@@ -304,8 +302,9 @@ func TestRelay(t *testing.T) {
 	})
 	c := connectClient(t, ln)
 
-	// Set up two relay buffers (simulating two TCP clients)
-	var buf1, buf2 bytes.Buffer
+	// Set up two relay buffers (simulating two TCP clients). Relays are written
+	// from their own goroutines, so the buffers must be safe to read here.
+	var buf1, buf2 syncBuffer
 	c.AddRelay(&buf1)
 	c.AddRelay(&buf2)
 

@@ -178,9 +178,8 @@ func TestRTTYAdminEnable(t *testing.T) {
 		t.Fatal("rttyEnabled should be true after admin 0x13 with bit 7 set")
 	}
 
-	// Should send MD6 then DT2 to set DATA/FSK-D mode
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
+	// Admin 0x13 sets internal state only — no MD6/DT2 sent (N1MM manages radio mode)
+	_ = cmds
 }
 
 func TestRTTYAdminDisable(t *testing.T) {
@@ -191,8 +190,6 @@ func TestRTTYAdminDisable(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	// Disable: P1 bit 7 clear
 	wk.processByte(0x00)
@@ -208,8 +205,8 @@ func TestRTTYAdminDisable(t *testing.T) {
 		t.Fatal("rttyEnabled should be false after admin 0x13 with bit 7 clear")
 	}
 
-	// Should send MD3 to return to CW
-	expectCmd(t, cmds, "MD3")
+	// No MD3 sent — N1MM manages radio mode, not the WinKeyer emulator
+	_ = cmds
 }
 
 func TestRTTYAdminConfigBits(t *testing.T) {
@@ -222,9 +219,7 @@ func TestRTTYAdminConfigBits(t *testing.T) {
 	wk.processByte(0xD2) // 1101_0010
 	wk.processByte(0x00)
 
-	// Drain CAT commands
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
+	_ = cmds // no CAT commands sent — admin 0x13 is internal state only
 
 	wk.mu.Lock()
 	diddle := wk.rttyDiddle
@@ -251,8 +246,6 @@ func TestRTTYBracketFlow(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	// Drain echo bytes from enable
 	drainPort(tp, 100*time.Millisecond)
@@ -268,9 +261,8 @@ func TestRTTYBracketFlow(t *testing.T) {
 
 	wk.processByte(']')
 
-	// Should flush "TEST" via KY, then send EOT, then RX
+	// Should flush "TEST" via KY, then RX after txDelay (no EOT — we control PTT)
 	expectCmd(t, cmds, "KY TEST")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second) // PTT off after txDelay
 }
 
@@ -282,9 +274,6 @@ func TestRTTYAbort(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Start bracket, type some text, then abort
@@ -321,9 +310,6 @@ func TestRTTYSpecialChars(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Test } (CR/LF) inside bracket
@@ -338,7 +324,6 @@ func TestRTTYSpecialChars(t *testing.T) {
 
 	// Should contain "HI\r\n"
 	expectCmd(t, cmds, "KY HI\r\n")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
@@ -350,21 +335,21 @@ func TestRTTYTestPattern(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Test { (RYRYRY) inside bracket
 	wk.processByte('[')
 	expectCmd(t, cmds, "TX")
 
-	wk.processByte('{') // RYRYRY pattern — triggers immediate flush
+	wk.processByte('{') // RYRYRY pattern — buffered, flushed on ]
+	wk.processByte(']')
 
+	// All text flushed as single KY on close bracket
 	expectCmd(t, cmds, "KY RYRYRYRYRY")
+	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
-func TestRTTYChunkSplitting(t *testing.T) {
+func TestRTTYLongText(t *testing.T) {
 	wk, tp, cmds := newTestWK(t)
 
 	// Enable RTTY
@@ -372,29 +357,22 @@ func TestRTTYChunkSplitting(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
 	expectCmd(t, cmds, "TX")
 
-	// Send 30 chars — should auto-flush at 24
-	for i := 0; i < 30; i++ {
+	// Send 30 chars — all buffered until ]
+	for i := range 30 {
 		wk.processByte(byte('A' + (i % 26)))
 	}
 
-	// First chunk: 24 chars
-	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWX")
-
 	wk.processByte(']')
 
-	// Remaining 6 chars flush on close bracket
-	expectCmd(t, cmds, "KY YZABCD")
-	expectCmd(t, cmds, "KY |")
-	// RX is delayed by rttyTxDelay (accounts for Baudot transmission time)
-	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
+	// All 30 chars flushed as single KY (no chunking — K4 drops back-to-back KYs)
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXYZABCD")
+	// RX is delayed by rttyTxDelay (30 chars at 45.45 baud ≈ 6s + 1s padding)
+	expectCmdTimeout(t, cmds, "RX", 10*time.Second)
 }
 
 func TestRTTYUppercase(t *testing.T) {
@@ -405,9 +383,6 @@ func TestRTTYUppercase(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
@@ -420,7 +395,6 @@ func TestRTTYUppercase(t *testing.T) {
 	wk.processByte(']')
 
 	expectCmd(t, cmds, "KY HI")
-	expectCmd(t, cmds, "KY |")
 	expectCmdTimeout(t, cmds, "RX", 5*time.Second)
 }
 
@@ -432,9 +406,6 @@ func TestRTTYCWStillWorksOutsideBrackets(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Set high WPM for fast echo
@@ -458,9 +429,6 @@ func TestRTTYResetClearsState(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	wk.processByte('[')
@@ -472,8 +440,7 @@ func TestRTTYResetClearsState(t *testing.T) {
 	wk.processByte(0x00)
 	wk.processByte(0x01) // reset
 
-	// Reset should send MD3 (back to CW) and RX (PTT off from clearBuffer)
-	expectCmd(t, cmds, "MD3")
+	// Reset should send RX (PTT off) — no MD3, N1MM manages radio mode
 	expectCmd(t, cmds, "RX")
 
 	wk.mu.Lock()
@@ -490,16 +457,13 @@ func TestRTTYResetClearsState(t *testing.T) {
 }
 
 func TestRTTYEcho(t *testing.T) {
-	wk, tp, cmds := newTestWK(t)
+	wk, tp, _ := newTestWK(t)
 
 	// Enable RTTY
 	wk.processByte(0x00)
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
-
 	drainPort(tp, 100*time.Millisecond)
 
 	// Verify serial echo is on (mode register bit 2)
@@ -531,12 +495,11 @@ func TestIsRTTY(t *testing.T) {
 	wk.processByte(0x13)
 	wk.processByte(0x80)
 	wk.processByte(0x00)
-	expectCmd(t, cmds, "MD6")
-	expectCmd(t, cmds, "DT2")
 
 	if !wk.IsRTTY() {
 		t.Error("IsRTTY() should be true after FSK enable")
 	}
+	_ = cmds
 }
 
 // drainPort reads and discards bytes from the test port until timeout.
@@ -548,4 +511,168 @@ func drainPort(p *testPort, timeout time.Duration) {
 			return
 		}
 	}
+}
+
+// --- Status Byte Protocol Tests ---
+//
+// WK3 datasheet: a status byte is sent only when the internal status register
+// changes, and Host Open responds with only the revision code. N1MM treats an
+// idle status while it is starting a message as "message complete" (it unkeys
+// and can drop the text it has not yet written), so spurious idle bytes break it.
+
+// expectNoByte fails if any byte is written to the test port within d.
+func expectNoByte(t *testing.T, p *testPort, d time.Duration) {
+	t.Helper()
+	select {
+	case b := <-p.written:
+		t.Fatalf("unexpected byte 0x%02x written to host", b)
+	case <-time.After(d):
+	}
+}
+
+func TestClearBufferWhenIdleSendsNoStatus(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+
+	wk.processByte(0x0A) // clear buffer while already idle
+
+	expectNoByte(t, tp, 150*time.Millisecond)
+}
+
+func TestClearBufferWhileBusySendsIdleStatus(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 5
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	expectStatus(t, tp, true)
+
+	wk.processByte(0x0A) // abort: busy -> idle is a real status change
+	expectStatus(t, tp, false)
+}
+
+func TestHostOpenSendsOnlyVersion(t *testing.T) {
+	wk, tp, _ := newTestWK(t)
+	wk.hostOpen = false
+
+	wk.processByte(0x00)
+	wk.processByte(0x02) // host open
+
+	if b := readByte(t, tp, time.Second); b != WKVersion {
+		t.Fatalf("host open: first byte 0x%02x, want version 0x%02x", b, WKVersion)
+	}
+	expectNoByte(t, tp, 150*time.Millisecond)
+}
+
+// TestN1MMMessageStartNoSpuriousIdle replays the byte sequence N1MM sends for
+// an F-key message (captured in docs/wk-trace): clear buffer, pointer reset,
+// pointer append at 0, buffered speed, then the text.
+func TestN1MMMessageStartNoSpuriousIdle(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+
+	for _, b := range []byte{0x0A, 0x16, 0x00, 0x16, 0x02, 0x00, 0x1C, 0x17, '?'} {
+		wk.processByte(b)
+	}
+
+	// The first byte back must be the busy status for the new message,
+	// not an idle status from the clear buffer.
+	expectStatus(t, tp, true)
+	expectCmd(t, cmds, "KS023")
+	expectCmd(t, cmds, "KY ?")
+}
+
+// --- Shutdown and Buffer Lifecycle Tests ---
+
+// drainCmds discards CAT commands until none arrive for quiet.
+func drainCmds(cmds chan string, quiet time.Duration) {
+	for {
+		select {
+		case <-cmds:
+		case <-time.After(quiet):
+			return
+		}
+	}
+}
+
+// TestCloseReleasesRTTYPTT: stopping Sparks mid-transmission must not leave
+// the radio keyed.
+func TestCloseReleasesRTTYPTT(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.processByte(0x00)
+	wk.processByte(0x13)
+	wk.processByte(0x80)
+	wk.processByte(0x00)
+	drainPort(tp, 100*time.Millisecond)
+
+	wk.processByte('[')
+	expectCmd(t, cmds, "TX")
+
+	wk.Close()
+	expectCmd(t, cmds, "RX")
+}
+
+// TestCloseAbortsCWInProgress: text already handed to the K4 keeps keying
+// after Stop unless the keyer aborts it.
+func TestCloseAbortsCWInProgress(t *testing.T) {
+	wk, _, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 5
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	expectCmd(t, cmds, "KY E")
+
+	wk.Close()
+	expectCmd(t, cmds, "RX")
+}
+
+// TestCloseWhenIdleSendsNothing: an idle Stop must not unkey a transmission
+// the operator started some other way.
+func TestCloseWhenIdleSendsNothing(t *testing.T) {
+	wk, _, cmds := newTestWK(t)
+
+	wk.Close()
+
+	select {
+	case cmd := <-cmds:
+		t.Fatalf("idle Close sent %q", cmd)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestBufferReclaimedAfterDrain: the 64-byte buffer is reused once its
+// contents have been sent, so CW does not stop after 64 characters.
+func TestBufferReclaimedAfterDrain(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 1200 // ~1ms dits so a full buffer drains quickly
+	wk.mu.Unlock()
+
+	for i := 0; i < BufferSize; i++ {
+		wk.processByte('E')
+	}
+	waitIdle(t, tp)
+	drainCmds(cmds, 200*time.Millisecond)
+
+	wk.processByte('T')
+	expectCmd(t, cmds, "KY T")
+}
+
+// TestPointerResetAfterDrainSendsNewText: a pointer reset (0x16 0x00) with no
+// clear buffer, after the previous message drained, starts a fresh message.
+func TestPointerResetAfterDrainSendsNewText(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	wk.mu.Lock()
+	wk.wpm = 1200
+	wk.mu.Unlock()
+
+	wk.processByte('E')
+	wk.processByte('E')
+	waitIdle(t, tp)
+	drainCmds(cmds, 200*time.Millisecond)
+
+	wk.processByte(0x16)
+	wk.processByte(0x00)
+	wk.processByte('T')
+	expectCmd(t, cmds, "KY T")
 }

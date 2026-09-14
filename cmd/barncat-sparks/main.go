@@ -45,7 +45,9 @@ func main() {
 	catTransport := flag.String("cat-transport", "", "CAT transport: tcp or serial")
 	catSerialPort := flag.String("cat-serial", "", "Serial port for radio CAT (e.g., COM3)")
 	catBaud := flag.Int("cat-baud", 0, "Baud rate for serial CAT (default: 38400)")
+	catPassword := flag.String("cat-password", "", "K4 authentication password (for port 9205)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
+	radioListen := flag.String("radio-listen", "", "TCP listen address for RadioServer (e.g., :9400)")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -77,7 +79,7 @@ func main() {
 	// If CLI flags specify port or midi, run headless (backwards compatible)
 	if *portName != "" || *midiDevice != "" || *noGUI {
 		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
-			*catTransport, *catSerialPort, *catBaud, *catListen)
+			*catTransport, *catSerialPort, *catBaud, *catPassword, *catListen, *radioListen)
 		return
 	}
 
@@ -85,8 +87,14 @@ func main() {
 	webui.RunWebUI(cfgPath)
 }
 
+// hasHeadlessWork reports whether headless mode has anything to run: a
+// WinKeyer port, a MIDI device, or a CATServer or RadioServer on its own.
+func hasHeadlessWork(portName, midiDevice, catListen, radioListen string) bool {
+	return portName != "" || midiDevice != "" || catListen != "" || radioListen != ""
+}
+
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
-	catTransport, catSerialPort string, catBaud int, catListen string) {
+	catTransport, catSerialPort string, catBaud int, catPassword string, catListen, radioListen string) {
 	// Load config for defaults if CLI flags are sparse
 	cfg, _ := config.LoadAppConfig(cfgPath)
 	if cfg == nil {
@@ -112,8 +120,14 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if catBaud == 0 {
 		catBaud = 38400
 	}
+	if catPassword == "" {
+		catPassword = cfg.CATPassword
+	}
 	if catListen == "" {
 		catListen = cfg.CATListen
+	}
+	if radioListen == "" {
+		radioListen = cfg.RadioServerListen
 	}
 	if speed == 0 {
 		speed = cfg.KeyerSpeed
@@ -122,7 +136,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		midiConfigPath = "midi-config.json"
 	}
 
-	if portName == "" && midiDevice == "" {
+	if !hasHeadlessWork(portName, midiDevice, catListen, radioListen) {
 		fmt.Fprintln(os.Stderr, "BarnCat Sparks - WinKeyer emulator & MIDI controller for K4")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Usage: barncat-sparks                                        # Launch web UI")
@@ -137,7 +151,9 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		fmt.Fprintln(os.Stderr, "  -cat-transport  CAT transport: tcp or serial (default: tcp)")
 		fmt.Fprintln(os.Stderr, "  -cat-serial     Serial port for radio CAT (e.g., COM3)")
 		fmt.Fprintln(os.Stderr, "  -cat-baud       Baud rate for serial CAT (default: 38400)")
+		fmt.Fprintln(os.Stderr, "  -cat-password   K4 authentication password (for port 9205)")
 		fmt.Fprintln(os.Stderr, "  -cat-listen     TCP listen address for CAT server (e.g., :9300)")
+		fmt.Fprintln(os.Stderr, "  -radio-listen   TCP listen address for RadioServer (e.g., :9400)")
 		fmt.Fprintln(os.Stderr, "  -speed          Initial keyer speed in WPM (default: 25)")
 		fmt.Fprintln(os.Stderr, "  -config         Path to config file")
 		fmt.Fprintln(os.Stderr, "  -nogui          Run in headless mode (no web UI)")
@@ -165,9 +181,16 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 			log.Fatalf("Failed to connect to radio: %v", err)
 		}
 	default:
-		log.Printf("  CAT: %s (TCP)", catAddr)
-		if err := c.ConnectTCP(catAddr); err != nil {
-			log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+		if catPassword != "" {
+			log.Printf("  CAT: %s (K4 auth)", catAddr)
+			if err := c.ConnectK4(catAddr, catPassword); err != nil {
+				log.Fatalf("K4 auth failed for %s: %v", catAddr, err)
+			}
+		} else {
+			log.Printf("  CAT: %s (TCP)", catAddr)
+			if err := c.ConnectTCP(catAddr); err != nil {
+				log.Fatalf("Failed to connect to CAT server %s: %v", catAddr, err)
+			}
 		}
 	}
 	defer c.Close()
@@ -181,6 +204,17 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		go srv.Run()
 		defer srv.Close()
 		log.Printf("  CATServer: %s", catListen)
+	}
+
+	// Start RadioServer if listen address configured
+	if radioListen != "" {
+		rsrv, err := cat.NewRadioServer(c, radioListen)
+		if err != nil {
+			log.Fatalf("RadioServer: %v", err)
+		}
+		go rsrv.Run()
+		defer rsrv.Close()
+		log.Printf("  RadioServer: %s", radioListen)
 	}
 
 	if portName != "" {
@@ -201,7 +235,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		if err != nil {
 			log.Fatalf("Failed to load MIDI config %s: %v", midiConfigPath, err)
 		}
-		midiCfg.Device = midiDevice
+		midiCfg.Devices = []string{midiDevice}
 		midiDrv := midi.NewMIDIDriver(c, midiCfg)
 		go func() {
 			if err := midiDrv.Run(); err != nil {
