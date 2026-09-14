@@ -287,6 +287,7 @@ func TestIndexWiresStation(t *testing.T) {
 		`'/api/hearth/status'`, `'/api/hearth/test'`, `'/api/hearth/k4'`, `'/api/hearth/powersave'`,
 		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
 		`id="operateView"`, `id="settingsView"`, `id="stationHint"`, `id="saveMsg"`, `showTab(`,
+		`id="laptopRows"`, `'/api/hearth/wol'`, `canUseHearth('wol')`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("webui.html missing %s", want)
@@ -309,7 +310,7 @@ func TestIndexSplitsOperateAndSettings(t *testing.T) {
 	if operate < 0 || settings < 0 || operate > settings {
 		t.Fatalf("operateView at %d, settingsView at %d; want operateView first", operate, settings)
 	}
-	for _, id := range []string{`id="startBtn"`, `id="stopBtn"`, `id="statusBar"`, `id="stationPanel"`, `id="k4OnBtn"`, `id="psBtn"`, `id="stationMsg"`} {
+	for _, id := range []string{`id="startBtn"`, `id="stopBtn"`, `id="statusBar"`, `id="stationPanel"`, `id="k4OnBtn"`, `id="psBtn"`, `id="stationMsg"`, `id="laptopRows"`} {
 		if i := strings.Index(body, id); i < operate || i > settings {
 			t.Errorf("%s is not inside operateView", id)
 		}
