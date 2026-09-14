@@ -667,7 +667,25 @@ let hearthGen = 0;
 let hearthPollGen = null;          // generation whose status poll is in flight
 let hearthIdentityFetchGen = null; // generation whose identity re-fetch is in flight
 
+// lastHearthKey is the four hearth settings startHearth last (re)started with.
+// null can't equal a real key, so the first call from init() always runs.
+let lastHearthKey = null;
+
 function startHearth(url) {
+  // Start and Save call startHearth on every click, but the spec's own
+  // routine is "wake the laptop, press Start" — a cold boot takes minutes, so
+  // Start/Save mid-wake is normal. Only restart the station (and reset wolWaking,
+  // the timers, hearthGen, etc.) when one of its four settings actually
+  // changed; otherwise this is a no-op and the in-flight wake keeps running.
+  const key = JSON.stringify([
+    url,
+    document.getElementById('hearthReplicaUrl').value.trim(),
+    document.getElementById('hearthToken').value,
+    document.getElementById('hearthSite').value.trim()
+  ]);
+  if (key === lastHearthKey) return;
+  lastHearthKey = key;
+
   if (hearthPoll) { clearInterval(hearthPoll); hearthPoll = null; }
   hearthGen++;
   hearthStatus = null;
@@ -675,6 +693,7 @@ function startHearth(url) {
   wolTargets = [];
   wolFetchedAt = 0;
   wolWaking = {};
+  lastLaptopSig = null; // force a re-render for the new station's rows
   if (wolTimer) { clearInterval(wolTimer); wolTimer = null; }
   resetStationView();
   document.getElementById('stationPanel').hidden = !url;
@@ -873,11 +892,20 @@ function controlBlocker(scope, piOnly) {
   return '';
 }
 
+// controlState computes the {disabled, title} a control should show. It's
+// split out from setControl so renderLaptopRows can compute the same values
+// ahead of touching the DOM, to build a row signature before deciding
+// whether a rebuild is needed.
+function controlState(blocker, stateOk, stateReason) {
+  return {disabled: !!blocker || !stateOk, title: blocker || (stateOk ? '' : stateReason)};
+}
+
 // setControl enables btn only when nothing blocks it and its own state allows
 // it, and titles it with whichever reason applies.
 function setControl(btn, blocker, stateOk, stateReason) {
-  btn.disabled = !!blocker || !stateOk;
-  btn.title = blocker || (stateOk ? '' : stateReason);
+  const cs = controlState(blocker, stateOk, stateReason);
+  btn.disabled = cs.disabled;
+  btn.title = cs.title;
 }
 
 function renderHearthControls() {
@@ -988,6 +1016,10 @@ let wolFetchedAt = 0;   // Date.now() when the last fetch finished; 0 = never
 let wolFetchGen = null; // generation whose fetch is in flight
 let wolWaking = {};     // name -> {until: ms, failed: bool}
 let wolTimer = null;
+// lastLaptopSig is the signature of what renderLaptopRows last put in the
+// DOM. null can't equal a real signature, so the first render always runs.
+// startHearth resets it to null so a station change always re-renders.
+let lastLaptopSig = null;
 
 function operateOnScreen() {
   return !document.getElementById('operateView').hidden && document.visibilityState === 'visible';
@@ -1058,27 +1090,45 @@ function describeLaptop(t) {
   return 'unknown';
 }
 
+// renderLaptopRows rebuilds the laptop rows only when something rendered
+// actually changed. Every 10s status poll calls this, and rebuilding the DOM
+// every time replaces the Wake button under a click in progress, drops
+// keyboard focus, and closes an open "why disabled" tooltip — so the row
+// signature (name, status text, whether Wake is shown, disabled, title) is
+// compared against the last render first.
 function renderLaptopRows() {
   const box = document.getElementById('laptopRows');
+  const rows = wolTargets.map(t => {
+    // Wake is offered only to a token whose whoami allows it; without the
+    // scope hearth answers 403, so there is nothing to press. Status still shows.
+    const showWake = canUseHearth('wol');
+    const cs = showWake
+      ? controlState(controlBlocker('wol', true), !waking(t.name), 'waking — watching for it to come up')
+      : null;
+    return {name: t.name, status: describeLaptop(t), showWake: showWake, disabled: cs && cs.disabled, title: cs && cs.title};
+  });
+  const sig = JSON.stringify(rows);
+  if (sig === lastLaptopSig) return;
+  lastLaptopSig = sig;
+
   box.replaceChildren();
-  for (const t of wolTargets) {
+  for (const r of rows) {
     const row = document.createElement('div');
     row.className = 'station-row';
     const label = document.createElement('span');
     label.className = 'station-label';
-    label.textContent = t.name;
-    label.title = t.name;
+    label.textContent = r.name;
+    label.title = r.name;
     const value = document.createElement('span');
     value.className = 'station-value';
-    value.textContent = describeLaptop(t);
+    value.textContent = r.status;
     row.append(label, value);
-    // Wake is offered only to a token whose whoami allows it; without the
-    // scope hearth answers 403, so there is nothing to press. Status still shows.
-    if (canUseHearth('wol')) {
+    if (r.showWake) {
       const btn = document.createElement('button');
       btn.textContent = 'Wake';
-      setControl(btn, controlBlocker('wol', true), !waking(t.name), 'waking — watching for it to come up');
-      btn.onclick = () => wakeLaptop(t.name);
+      btn.disabled = r.disabled;
+      btn.title = r.title;
+      btn.onclick = () => wakeLaptop(r.name);
       row.append(btn);
     }
     box.append(row);
