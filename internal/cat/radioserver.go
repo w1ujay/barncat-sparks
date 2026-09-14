@@ -114,7 +114,14 @@ func (s *RadioServer) Run() {
 // routeConn peeks at the first bytes of a connection to determine whether it
 // is an HTTP request or a raw CAT command, then routes accordingly.
 func (s *RadioServer) routeConn(conn net.Conn) {
+	// Track the connection while it is classified: peekProtocol's first read
+	// has no deadline, so a client that never sends would outlive Close.
+	if !s.trackConn(conn) {
+		conn.Close()
+		return
+	}
 	peek, err := peekProtocol(conn)
+	s.untrackConn(conn)
 	if err != nil {
 		conn.Close()
 		return
@@ -123,7 +130,7 @@ func (s *RadioServer) routeConn(conn net.Conn) {
 
 	if isHTTP(peek) {
 		select {
-		case s.httpLn.ch <- wrapped:
+		case s.httpLn.ch <- wrapped: // httpServer tracks it from here
 		case <-s.done:
 			conn.Close()
 		}
@@ -132,23 +139,35 @@ func (s *RadioServer) routeConn(conn net.Conn) {
 	}
 }
 
+// trackConn registers conn so Close disconnects it. It returns false when the
+// server has already closed; the caller must then close conn itself.
+func (s *RadioServer) trackConn(conn net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clients == nil { // accepted just before Close
+		return false
+	}
+	s.clients[conn] = struct{}{}
+	return true
+}
+
+func (s *RadioServer) untrackConn(conn net.Conn) {
+	s.mu.Lock()
+	delete(s.clients, conn)
+	s.mu.Unlock()
+}
+
 // handleClient reads semicolon-delimited CAT commands from a TCP client
 // and dispatches each to the Radio interface.
 func (s *RadioServer) handleClient(conn net.Conn) {
-	s.mu.Lock()
-	if s.clients == nil { // accepted just before Close
-		s.mu.Unlock()
+	if !s.trackConn(conn) {
 		conn.Close()
 		return
 	}
-	s.clients[conn] = struct{}{}
-	s.mu.Unlock()
 
 	defer func() {
 		conn.Close()
-		s.mu.Lock()
-		delete(s.clients, conn)
-		s.mu.Unlock()
+		s.untrackConn(conn)
 		log.Printf("RadioServer: client disconnected")
 	}()
 
