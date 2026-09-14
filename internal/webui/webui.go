@@ -460,9 +460,11 @@ func (w *WebUI) handleMIDIDevices(rw http.ResponseWriter, r *http.Request) {
 
 // actionInfo is the JSON shape for a single action in /api/actions.
 type actionInfo struct {
-	Name    string       `json:"name"`
-	Label   string       `json:"label"`
-	Options []optionInfo `json:"options,omitempty"`
+	Name      string       `json:"name"`
+	Label     string       `json:"label"`
+	Kind      string       `json:"kind"`
+	Momentary bool         `json:"momentary"`
+	Options   []optionInfo `json:"options,omitempty"`
 }
 
 type optionInfo struct {
@@ -476,7 +478,7 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 	actions := make([]actionInfo, len(names))
 	for i, name := range names {
 		def := config.ActionRegistry[name]
-		a := actionInfo{Name: name, Label: def.Label}
+		a := actionInfo{Name: name, Label: def.Label, Kind: def.Kind, Momentary: def.Momentary}
 		for _, opt := range def.Options {
 			a.Options = append(a.Options, optionInfo{
 				Key:     opt.Key,
