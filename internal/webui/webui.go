@@ -26,19 +26,19 @@ var webuiHTML embed.FS
 
 // WebUI holds the HTTP server and runtime state.
 type WebUI struct {
-	mu        sync.Mutex
-	config    *config.AppConfig
-	cfgPath   string
-	running   bool
-	statusMsg string
+	mu           sync.Mutex
+	config       *config.AppConfig
+	cfgPath      string
+	running      bool
+	statusMsg    string
 	cat          cat.Radio
 	qk4VolumeCat *cat.CATClient // optional QK4 connection for volume routing
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
-	catServer   *cat.CATServer
-	radioServer *cat.RadioServer
-	lp100       *lp100a.Driver
-	server    *http.Server
+	catServer    *cat.CATServer
+	radioServer  *cat.RadioServer
+	lp100        *lp100a.Driver
+	server       *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
 	decodeMu      sync.Mutex
@@ -81,6 +81,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/hearth/test", w.handleHearthTest)
 	mux.HandleFunc("/api/hearth/k4", w.handleHearthK4)
 	mux.HandleFunc("/api/hearth/powersave", w.handleHearthPowerSave)
+	mux.HandleFunc("/api/hearth/wol", w.handleHearthWol)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
