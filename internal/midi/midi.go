@@ -6,12 +6,27 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/ujay/barncat-sparks/internal/cat"
 )
 
 // MIDIConfig holds the MIDI controller configuration.
 type MIDIConfig struct {
-	Device   string        `json:"device"`
-	Mappings []MIDIMapping `json:"mappings"`
+	Device     string        `json:"device"`            // legacy single device
+	Devices    []string      `json:"devices,omitempty"` // multi-device
+	Mappings   []MIDIMapping `json:"mappings"`
+	PaddleSwap bool          `json:"paddle_swap"` // swap dit/dah paddle input
+}
+
+// GetDevices returns the configured device names, merging legacy and new fields.
+func (c *MIDIConfig) GetDevices() []string {
+	if len(c.Devices) > 0 {
+		return c.Devices
+	}
+	if c.Device != "" {
+		return []string{c.Device}
+	}
+	return nil
 }
 
 // MIDIMapping maps a MIDI event to a K4 action.
@@ -34,6 +49,20 @@ func LoadMIDIConfig(path string) (*MIDIConfig, error) {
 		return nil, fmt.Errorf("parse MIDI config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// SetVolumeCat sets an alternative Radio target for volume commands.
+// When set, volume/volume_b actions are sent here instead of the main radio.
+func (d *MIDIDriver) SetVolumeCat(r cat.Radio) {
+	d.volumeCat = r
+}
+
+// volumeTarget returns the Radio to use for volume commands.
+func (d *MIDIDriver) volumeTarget() cat.Radio {
+	if d.volumeCat != nil {
+		return d.volumeCat
+	}
+	return d.cat
 }
 
 // midiKey uniquely identifies a MIDI event for fast lookup.
@@ -118,7 +147,37 @@ func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 	if m.Action == "ptt" && d.pttOn {
 		log.Printf("MIDI: note_off ch=%d note=%d -> ptt off", channel, number)
 		d.pttOn = false
-		go d.cat.SetPTT(false)
+		// Synchronous, like key-down in dispatch, so release follows press.
+		d.cat.SetPTT(false)
+	}
+}
+
+// releasePTT is called from Close. It marks the driver closed and unkeys the
+// radio if MIDI keyed it: the pad's own release will never be processed, and
+// an event the loop is still finishing must not key the radio afterwards.
+func (d *MIDIDriver) releasePTT() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
+	if d.pttOn {
+		log.Printf("MIDI: releasing PTT on close")
+		d.pttOn = false
+		d.cat.SetPTT(false)
+	}
+}
+
+// deviceDisconnected is called when a controller goes away (USB unplug). It
+// unkeys the radio if MIDI keyed it, because the pad's release event can never
+// arrive. pttOn doesn't record which device keyed it, so any disconnect
+// releases it; unkeying is the safe side. Unlike releasePTT, the driver stays
+// open, so the pads key the radio again once the device reconnects.
+func (d *MIDIDriver) deviceDisconnected(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pttOn {
+		log.Printf("MIDI: releasing PTT, device %q disconnected", name)
+		d.pttOn = false
+		d.cat.SetPTT(false)
 	}
 }
 
@@ -150,10 +209,16 @@ func ccValue(value, maxOut int, opts map[string]any) int {
 func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 	switch m.Action {
 	case "ptt":
+		// PTT is sent synchronously, under mu, from the single event loop. A
+		// goroutine per press and per release could reach the radio as RX then
+		// TX and leave it transmitting after the pad is released.
+		// Never key after Close has released PTT (see releasePTT).
 		d.mu.Lock()
-		d.pttOn = true
+		if !d.closed {
+			d.pttOn = true
+			d.cat.SetPTT(true)
+		}
 		d.mu.Unlock()
-		go d.cat.SetPTT(true)
 
 	case "band_up":
 		go d.cat.BandUp()
@@ -178,11 +243,11 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 
 	case "volume":
 		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetVolume(0, level)
+		go d.volumeTarget().SetVolume(0, level)
 
 	case "volume_b":
 		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetVolume(1, level)
+		go d.volumeTarget().SetVolume(1, level)
 
 	case "rf_gain":
 		level := ccValue(value, 60, m.Opts)
@@ -279,6 +344,42 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 		d.notchHz = hz
 		go d.cat.SetNotchFreq(hz)
 
+	case "rf_gain_adjust":
+		step := int(optFloat(m.Opts, "step", 1))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustRFGain(0, delta)
+		}
+
+	case "rf_gain_b_adjust":
+		step := int(optFloat(m.Opts, "step", 1))
+		delta := relativeCC(value, step)
+		if delta != 0 {
+			d.adjustRFGain(1, delta)
+		}
+
+	case "rf_gain_up":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(0, -step)
+
+	case "rf_gain_down":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(0, step)
+
+	case "rf_gain_b_up":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(1, -step)
+
+	case "rf_gain_b_down":
+		step := int(optFloat(m.Opts, "step", 1))
+		d.adjustRFGain(1, step)
+
+	case "rf_gain_toggle":
+		go d.cat.ToggleRFGain(0)
+
+	case "rf_gain_b_toggle":
+		go d.cat.ToggleRFGain(1)
+
 	case "cw_msg":
 		if m.Opts != nil {
 			if text, ok := m.Opts["text"]; ok {
@@ -287,6 +388,14 @@ func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
 				}
 			}
 		}
+
+	case "dit_paddle":
+		dit := !d.config.PaddleSwap
+		go d.cat.SendCWElement(dit)
+
+	case "dah_paddle":
+		dit := d.config.PaddleSwap
+		go d.cat.SendCWElement(dit)
 
 	default:
 		log.Printf("MIDI: unknown action %q", m.Action)
@@ -306,8 +415,8 @@ func relativeCC(value, step int) int {
 
 // tuneVFO adjusts VFO A frequency relative to current.
 // Caches frequency locally and throttles CAT commands to avoid flooding the radio.
-// Re-queries the radio if the cache is stale (>2s idle) so band changes and
-// external tuning are picked up automatically.
+// Re-queries the radio on the first knob turn after any idle gap (>50ms) so band
+// changes and external tuning are picked up automatically.
 // Must be called from the event loop goroutine (not concurrently).
 func (d *MIDIDriver) tuneVFO(value, step int) {
 	delta := relativeCC(value, step)
@@ -317,8 +426,8 @@ func (d *MIDIDriver) tuneVFO(value, step int) {
 
 	now := time.Now()
 
-	// Re-query radio if cache is stale (frequency may have changed externally)
-	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 2*time.Second {
+	// Re-query radio on first turn after idle (frequency may have changed externally)
+	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 250*time.Millisecond {
 		hz, err := d.cat.GetFreqA()
 		if err != nil {
 			log.Printf("MIDI: GetFreqA failed: %v", err)
@@ -351,7 +460,7 @@ func (d *MIDIDriver) tuneVFOB(value, step int) {
 
 	now := time.Now()
 
-	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 2*time.Second {
+	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 250*time.Millisecond {
 		hz, err := d.cat.GetFreqB()
 		if err != nil {
 			log.Printf("MIDI: GetFreqB failed: %v", err)
@@ -371,6 +480,23 @@ func (d *MIDIDriver) tuneVFOB(value, step int) {
 	}
 	d.lastTuneBAt = now
 	d.cat.SetFreqB(d.vfoBFreq)
+}
+
+// adjustRFGain changes the RF gain attenuation by delta dB.
+// Tracks current level locally (defaults to 0 = full gain).
+func (d *MIDIDriver) adjustRFGain(recv int, delta int) {
+	gain := &d.rfGain
+	if recv == 1 {
+		gain = &d.rfGainB
+	}
+	*gain += delta
+	if *gain < 0 {
+		*gain = 0
+	}
+	if *gain > 60 {
+		*gain = 60
+	}
+	go d.cat.SetRFGain(recv, *gain)
 }
 
 // adjustFilter changes the filter bandwidth by deltaHz.

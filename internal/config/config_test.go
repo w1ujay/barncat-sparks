@@ -152,13 +152,34 @@ func TestAppConfigToMIDIConfig(t *testing.T) {
 		},
 	}
 	mc := cfg.ToMIDIConfig()
-	if mc.Device != "DJ2GO2" {
-		t.Errorf("Device = %q, want DJ2GO2", mc.Device)
+	if len(mc.Devices) != 1 || mc.Devices[0] != "DJ2GO2" {
+		t.Errorf("Devices = %v, want [DJ2GO2]", mc.Devices)
 	}
 	if len(mc.Mappings) != 2 {
 		t.Fatalf("got %d mappings, want 2", len(mc.Mappings))
 	}
 	if mc.Mappings[0].Action != "volume" {
 		t.Errorf("mapping[0].Action = %q, want volume", mc.Mappings[0].Action)
+	}
+}
+
+func TestAppConfigHearthFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparks-config.json")
+	cfg := &AppConfig{
+		HearthURL:        "http://stalker-rtl:8123",
+		HearthReplicaURL: "https://cabin.nz1u.net",
+		HearthToken:      "0123456789abcdef0123456789abcdef",
+		HearthSite:       "cabin",
+	}
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HearthURL != cfg.HearthURL || loaded.HearthReplicaURL != cfg.HearthReplicaURL ||
+		loaded.HearthToken != cfg.HearthToken || loaded.HearthSite != cfg.HearthSite {
+		t.Errorf("round trip = %q %q %q %q", loaded.HearthURL, loaded.HearthReplicaURL, loaded.HearthToken, loaded.HearthSite)
 	}
 }

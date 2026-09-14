@@ -53,6 +53,27 @@ details summary:hover{color:#569cd6}
 .radio-group{display:flex;gap:12px}
 .radio-group label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:0.9em}
 .radio-group input[type="radio"]{width:auto;margin:0}
+.mapping-card{background:#252526;border:1px solid #333;border-radius:3px;padding:8px 10px;margin-bottom:6px}
+.mapping-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.mapping-label{color:#4ec9b0;font-weight:600;font-size:0.9em}
+.mapping-body{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.mapping-body select,.mapping-body input{font-size:0.85em;padding:3px 5px}
+.mapping-body select{width:auto}
+.mapping-body input[type="number"]{width:55px}
+.mapping-field{display:inline-flex;align-items:center;gap:3px}
+.mapping-field>label{font-size:0.8em;color:#888;white-space:nowrap;display:inline}
+.midi-device-list label{display:block;padding:3px 0;font-size:0.9em;cursor:pointer}
+.midi-device-list input[type="checkbox"]{width:auto;margin-right:6px}
+.inline-row{display:flex;gap:6px}
+.inline-row input{flex:1}
+.station-row{display:grid;grid-template-columns:100px 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
+.station-label{font-size:0.85em;color:#9cdcfe}
+.station-value{font-size:0.9em}
+.station-source{font-size:0.85em;color:#888;margin:8px 0}
+.station-source.live{color:#4ec9b0}
+.station-source.warn{color:#d7ba7d}
+.station-note{font-size:0.85em;color:#888;min-height:1.3em;margin-bottom:6px}
+.station-note.error{color:#f48771}
 </style>
 </head>
 <body>
@@ -76,9 +97,21 @@ details summary:hover{color:#569cd6}
     <label><input type="radio" name="catTransport" value="serial" onchange="onTransportChange()"> Serial</label>
   </div>
 </div>
+<div class="form-row" id="tcpModeRow">
+  <label for="tcpMode">TCP Mode</label>
+  <select id="tcpMode" onchange="onTcpModeChange()">
+    <option value="plain">Plain TCP</option>
+    <option value="k4auth">K4 Auth (SHA-384)</option>
+    <option value="k4tls" disabled>K4 TLS-PSK (not supported)</option>
+  </select>
+</div>
 <div class="form-row" id="catAddrRow">
   <label for="catAddr">K4 Address</label>
   <input id="catAddr" type="text" placeholder="localhost:9299">
+</div>
+<div class="form-row" id="catPasswordRow" style="display:none">
+  <label for="catPassword">Password</label>
+  <input id="catPassword" type="password">
 </div>
 <div class="form-row" id="catSerialRow" style="display:none">
   <label for="catSerialPort">CAT Serial Port</label>
@@ -100,6 +133,18 @@ details summary:hover{color:#569cd6}
   <input id="catListen" type="text" placeholder="(disabled)">
 </div>
 <div class="form-row">
+  <label for="radioServerListen">RadioServer (listen)</label>
+  <input id="radioServerListen" type="text" placeholder="(disabled)">
+</div>
+<div class="form-row">
+  <label for="ampUrl">Amplifier URL</label>
+  <input id="ampUrl" type="text" placeholder="http://192.168.1.101:8080">
+</div>
+<div class="form-row">
+  <label for="lp100Port">LP-100A Port</label>
+  <select id="lp100Port"><option value="">(none)</option></select>
+</div>
+<div class="form-row">
   <label for="serialPort">WinKeyer Port</label>
   <select id="serialPort"><option value="">(none)</option></select>
 </div>
@@ -108,10 +153,47 @@ details summary:hover{color:#569cd6}
   <input id="keyerSpeed" type="number" min="5" max="99" placeholder="25">
 </div>
 
-<h2>MIDI</h2>
+<h2>Station</h2>
 <div class="form-row">
-  <label for="midiDevice">Device</label>
-  <span style="display:flex;gap:6px"><select id="midiDevice" style="flex:1"><option value="">(no MIDI devices)</option></select><button class="secondary" onclick="rescanMIDI()" title="Rescan MIDI devices">&#x21bb;</button></span>
+  <label for="hearthUrl">Hearth URL</label>
+  <input id="hearthUrl" type="text" placeholder="http://stalker-rtl:8123">
+</div>
+<div class="form-row">
+  <label for="hearthReplicaUrl">Replica URL</label>
+  <input id="hearthReplicaUrl" type="text" placeholder="https://cabin.nz1u.net (optional)">
+</div>
+<div class="form-row">
+  <label for="hearthSite">Site</label>
+  <input id="hearthSite" type="text" placeholder="cabin (only for a multi-site hub replica)">
+</div>
+<div class="form-row">
+  <label for="hearthToken">Operator Token</label>
+  <div class="inline-row">
+    <input id="hearthToken" type="password">
+    <button class="secondary" onclick="testHearth()">Test</button>
+  </div>
+</div>
+<div class="station-note" id="hearthIdentity"></div>
+<div id="stationPanel" style="display:none">
+  <div class="station-source" id="stationSource">—</div>
+  <div class="station-row">
+    <span class="station-label">K4</span>
+    <span class="station-value" id="k4State">—</span>
+    <button id="k4OnBtn" onclick="k4Power('on')" disabled>On</button>
+    <button id="k4OffBtn" class="danger" onclick="k4Power('off')" disabled>Off</button>
+  </div>
+  <div class="station-row">
+    <span class="station-label">Power-save</span>
+    <span class="station-value" id="psState">—</span>
+    <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
+  </div>
+  <div class="station-note" id="stationMsg"></div>
+</div>
+
+<h2>MIDI</h2>
+<div id="midiDevicesContainer"></div>
+<div class="mapping-btns">
+  <button class="secondary" onclick="rescanMIDI()" title="Rescan MIDI devices">&#x21bb; Rescan</button>
 </div>
 <details id="mappingsDetails">
   <summary>Mappings</summary>
@@ -124,6 +206,11 @@ details summary:hover{color:#569cd6}
 
 <h2>Options</h2>
 <div>
+  <label><input type="checkbox" id="paddleSwap"> Swap dit/dah paddles</label>
+  <label><input type="checkbox" id="qk4Volume" onchange="toggleQK4Addr()"> Route MIDI volume to QK4</label>
+  <span id="qk4AddrWrap" style="display:none">
+    <input type="text" id="qk4Address" placeholder="127.0.0.1:9299" size="20">
+  </span>
   <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
   <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
 </div>
@@ -144,14 +231,22 @@ details summary:hover{color:#569cd6}
 <script>
 let actions = [];
 let mappings = [];
+let midiDevices = [];
+let availableMIDIDevices = [];
+let controlMaps = {};
 let statusPoll = null;
+let sparksRunning = false;
+let hearthIdentity = null;  // last successful whoami
+let hearthStatus = null;    // last /api/hearth/status
+let hearthPoll = null;
 
 async function init() {
-  const [actResp, cfgResp, portsResp, midiResp, statusResp, aboutResp] = await Promise.all([
+  const [actResp, cfgResp, portsResp, midiResp, ctrlResp, statusResp, aboutResp] = await Promise.all([
     fetch('/api/actions'),
     fetch('/api/config'),
     fetch('/api/serial-ports'),
     fetch('/api/midi-devices'),
+    fetch('/api/control-names'),
     fetch('/api/status'),
     fetch('/api/about')
   ]);
@@ -159,6 +254,7 @@ async function init() {
   const cfg = await cfgResp.json();
   const ports = await portsResp.json();
   const devices = await midiResp.json();
+  controlMaps = await ctrlResp.json();
   const status = await statusResp.json();
   const about = await aboutResp.json();
 
@@ -168,12 +264,27 @@ async function init() {
 
   populateSelect('serialPort', ports, cfg.serial_port, '(none)');
   populateSelect('catSerialPort', ports, cfg.cat_serial_port, '(none)');
-  populateSelect('midiDevice', devices, cfg.midi_device, '(no MIDI devices)');
+  populateSelect('lp100Port', ports, cfg.lp100_port, '(none)');
+  availableMIDIDevices = devices;
+  midiDevices = cfg.midi_devices || (cfg.midi_device ? [cfg.midi_device] : []);
+  renderMIDIDevices();
   document.getElementById('catAddr').value = cfg.cat_address || '';
+  document.getElementById('catPassword').value = cfg.cat_password || '';
+  document.getElementById('tcpMode').value = cfg.cat_password ? 'k4auth' : 'plain';
   document.getElementById('keyerSpeed').value = cfg.keyer_speed || 25;
+  document.getElementById('paddleSwap').checked = cfg.paddle_swap || false;
+  document.getElementById('qk4Volume').checked = cfg.qk4_volume || false;
+  document.getElementById('qk4Address').value = cfg.qk4_address || '';
+  toggleQK4Addr();
   document.getElementById('minimizeToTray').checked = cfg.minimize_to_tray || false;
   document.getElementById('protocolTrace').checked = cfg.protocol_trace || false;
   document.getElementById('catListen').value = cfg.cat_listen || '';
+  document.getElementById('radioServerListen').value = cfg.radio_server_listen || '';
+  document.getElementById('ampUrl').value = cfg.amp_url || '';
+  document.getElementById('hearthUrl').value = cfg.hearth_url || '';
+  document.getElementById('hearthReplicaUrl').value = cfg.hearth_replica_url || '';
+  document.getElementById('hearthToken').value = cfg.hearth_token || '';
+  document.getElementById('hearthSite').value = cfg.hearth_site || '';
 
   // Set transport radio
   const transport = cfg.cat_transport || 'tcp';
@@ -188,13 +299,13 @@ async function init() {
   mappings = cfg.mappings || [];
   renderMappings();
   applyStatus(status);
+  startHearth(cfg.hearth_url || '');
 }
 
 async function rescanMIDI() {
   const resp = await fetch('/api/midi-devices');
-  const devices = await resp.json();
-  const cur = document.getElementById('midiDevice').value;
-  populateSelect('midiDevice', devices, cur, '(no MIDI devices)');
+  availableMIDIDevices = await resp.json();
+  renderMIDIDevices();
 }
 
 function populateSelect(id, items, selected, placeholder) {
@@ -209,34 +320,74 @@ function populateSelect(id, items, selected, placeholder) {
   }
 }
 
+function renderMIDIDevices() {
+  const container = document.getElementById('midiDevicesContainer');
+  // Merge available + configured (in case a saved device isn't currently plugged in)
+  const allDevices = [...new Set([...availableMIDIDevices, ...midiDevices.filter(d => d)])];
+  if (allDevices.length === 0) {
+    container.innerHTML = '<div class="no-mappings">(no MIDI devices found — click "Rescan")</div>';
+    return;
+  }
+  let html = '<div class="midi-device-list">';
+  for (const d of allDevices) {
+    const checked = midiDevices.includes(d) ? ' checked' : '';
+    const avail = availableMIDIDevices.includes(d);
+    const suffix = avail ? '' : ' <span style="color:#666">(not connected)</span>';
+    html += '<label><input type="checkbox" value="'+d+'"'+checked+' onchange="onMIDIDeviceToggle(this)"> '+d+suffix+'</label>';
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function onMIDIDeviceToggle(cb) {
+  if (cb.checked) {
+    if (!midiDevices.includes(cb.value)) midiDevices.push(cb.value);
+  } else {
+    midiDevices = midiDevices.filter(d => d !== cb.value);
+  }
+}
+
+function getControlName(type, channel, number) {
+  const key = (type || 'cc') + ':' + (channel || 0) + ':' + (number || 0);
+  for (const [pattern, cmap] of Object.entries(controlMaps)) {
+    for (const dev of midiDevices) {
+      if (dev.indexOf(pattern) !== -1) {
+        if (cmap[key]) return cmap[key];
+      }
+    }
+  }
+  return '';
+}
+
 function renderMappings() {
   const container = document.getElementById('mappingsContainer');
+  document.querySelector('#mappingsDetails summary').textContent =
+    'Mappings' + (mappings.length ? ' (' + mappings.length + ')' : '');
   if (mappings.length === 0) {
     container.innerHTML = '<div class="no-mappings">(no mappings — click "+ Add" to create one)</div>';
     return;
   }
-  let html = '<table class="mappings"><thead><tr>' +
-    '<th class="col-action">Action</th>' +
-    '<th class="col-type">Type</th>' +
-    '<th class="col-ch">Ch</th>' +
-    '<th class="col-num">Number</th>' +
-    '<th class="col-opts">Options</th>' +
-    '<th class="col-rm"></th>' +
-    '</tr></thead><tbody>';
+  let html = '';
   for (let i = 0; i < mappings.length; i++) {
     const m = mappings[i];
-    html += '<tr>' +
-      '<td>' + actionSelect(i, m.action) + '</td>' +
-      '<td>' + typeSelect(i, m.type) + '</td>' +
-      '<td><input type="number" min="0" max="15" value="' + (m.channel||0) +
-        '" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></td>' +
-      '<td><input type="number" min="0" max="127" value="' + (m.number||0) +
-        '" onchange="mappings['+i+'].number=parseInt(this.value)||0"></td>' +
-      '<td>' + optsFields(i, m.action, m.opts) + '</td>' +
-      '<td><button class="danger" onclick="removeMapping('+i+')" title="Remove">&times;</button></td>' +
-      '</tr>';
+    const act = actions.find(a => a.name === m.action);
+    const label = act ? act.label : '(unassigned)';
+    const ctrlName = getControlName(m.type, m.channel, m.number);
+    const ctrlDisplay = ctrlName ? ' <span style="color:#888;font-weight:normal">— ' + ctrlName + '</span>' : '';
+    html += '<div class="mapping-card">' +
+      '<div class="mapping-header">' +
+        '<span class="mapping-label">' + (i+1) + '. ' + label + ctrlDisplay + '</span>' +
+        '<button class="danger" onclick="removeMapping('+i+')" title="Remove">&times;</button>' +
+      '</div>' +
+      '<div class="mapping-body">' +
+        actionSelect(i, m.action) +
+        typeSelect(i, m.type) +
+        '<span class="mapping-field"><label>Ch</label><input type="number" min="0" max="15" value="'+(m.channel||0)+'" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></span>' +
+        '<span class="mapping-field"><label>#</label><input type="number" min="0" max="127" value="'+(m.number||0)+'" onchange="mappings['+i+'].number=parseInt(this.value)||0"></span>' +
+        optsFields(i, m.action, m.opts) +
+      '</div>' +
+    '</div>';
   }
-  html += '</tbody></table>';
   container.innerHTML = html;
 }
 
@@ -313,9 +464,25 @@ function removeLastMapping() {
 
 function onTransportChange() {
   const transport = document.querySelector('input[name="catTransport"]:checked').value;
-  document.getElementById('catAddrRow').style.display = transport === 'tcp' ? '' : 'none';
-  document.getElementById('catSerialRow').style.display = transport === 'serial' ? '' : 'none';
-  document.getElementById('catBaudRow').style.display = transport === 'serial' ? '' : 'none';
+  const isTcp = transport === 'tcp';
+  document.getElementById('tcpModeRow').style.display = isTcp ? '' : 'none';
+  document.getElementById('catAddrRow').style.display = isTcp ? '' : 'none';
+  document.getElementById('catSerialRow').style.display = !isTcp ? '' : 'none';
+  document.getElementById('catBaudRow').style.display = !isTcp ? '' : 'none';
+  if (isTcp) onTcpModeChange();
+  else document.getElementById('catPasswordRow').style.display = 'none';
+}
+
+function onTcpModeChange() {
+  const mode = document.getElementById('tcpMode').value;
+  const isAuth = mode === 'k4auth';
+  document.getElementById('catPasswordRow').style.display = isAuth ? '' : 'none';
+  document.getElementById('catAddr').placeholder = isAuth ? 'k4-hostname:9205' : 'localhost:9299';
+}
+
+function toggleQK4Addr() {
+  const on = document.getElementById('qk4Volume').checked;
+  document.getElementById('qk4AddrWrap').style.display = on ? '' : 'none';
 }
 
 async function onTraceChange() {
@@ -334,14 +501,25 @@ function gatherConfig() {
   return {
     serial_port: document.getElementById('serialPort').value,
     cat_address: document.getElementById('catAddr').value || 'localhost:9299',
+    cat_password: document.getElementById('tcpMode').value === 'k4auth' ? document.getElementById('catPassword').value : '',
     cat_transport: transport,
     cat_serial_port: document.getElementById('catSerialPort').value,
     cat_serial_baud: parseInt(document.getElementById('catBaud').value) || 38400,
     cat_listen: document.getElementById('catListen').value,
+    radio_server_listen: document.getElementById('radioServerListen').value,
+    amp_url: document.getElementById('ampUrl').value,
+    lp100_port: document.getElementById('lp100Port').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
-    midi_device: document.getElementById('midiDevice').value,
+    midi_devices: midiDevices.filter(d => d !== ''),
+    paddle_swap: document.getElementById('paddleSwap').checked,
+    qk4_volume: document.getElementById('qk4Volume').checked,
+    qk4_address: document.getElementById('qk4Address').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
     protocol_trace: document.getElementById('protocolTrace').checked,
+    hearth_url: document.getElementById('hearthUrl').value.trim(),
+    hearth_replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    hearth_token: document.getElementById('hearthToken').value,
+    hearth_site: document.getElementById('hearthSite').value.trim(),
     mappings: mappings.map(m => ({
       action: m.action,
       type: m.type || 'cc',
@@ -361,6 +539,7 @@ async function doSave() {
   });
   if (resp.ok) {
     setStatus(false, 'Settings saved');
+    startHearth(cfg.hearth_url);
   } else {
     const text = await resp.text();
     setStatus(false, 'Save failed: ' + text);
@@ -375,6 +554,7 @@ async function doStart() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(cfg)
   });
+  startHearth(cfg.hearth_url);
 
   const resp = await fetch('/api/start', {method: 'POST'});
   const status = await resp.json();
@@ -388,6 +568,7 @@ async function doStop() {
 }
 
 function applyStatus(s) {
+  sparksRunning = s.running;
   setStatus(s.running, s.message);
   document.getElementById('startBtn').disabled = s.running;
   document.getElementById('stopBtn').disabled = !s.running;
@@ -426,6 +607,289 @@ function renderAbout(about) {
     }).join(', ');
   }
   el.innerHTML = html;
+}
+
+// --- Station (lempster-hearth) ---
+// Everything hearth sends is rendered with textContent, never innerHTML.
+
+// hearthGen increases whenever the station is (re)started from saved config.
+// Every hearth request remembers the generation it started in and drops its
+// reply if the station changed meanwhile, so one station's status can never
+// drive the buttons for another.
+let hearthGen = 0;
+let hearthPollGen = null;          // generation whose status poll is in flight
+let hearthIdentityFetchGen = null; // generation whose identity re-fetch is in flight
+
+function startHearth(url) {
+  if (hearthPoll) { clearInterval(hearthPoll); hearthPoll = null; }
+  hearthGen++;
+  hearthStatus = null;
+  hearthIdentity = null;
+  resetStationView();
+  const panel = document.getElementById('stationPanel');
+  if (!url) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  fetchHearthIdentity({
+    url: url,
+    replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    token: document.getElementById('hearthToken').value
+  }).then(renderHearthControls);
+  pollHearth();
+  hearthPoll = setInterval(pollHearth, 10000);
+}
+
+// resetStationView blanks what was shown for the previous station and
+// disables its controls until the new station answers.
+function resetStationView() {
+  const src = document.getElementById('stationSource');
+  src.className = 'station-source';
+  src.textContent = '—';
+  document.getElementById('k4State').textContent = '—';
+  document.getElementById('psState').textContent = '—';
+  const id = document.getElementById('hearthIdentity');
+  id.className = 'station-note';
+  id.textContent = '';
+  setStationMsg('', false);
+  renderHearthControls();
+}
+
+async function testHearth() {
+  const el = document.getElementById('hearthIdentity');
+  el.className = 'station-note';
+  el.textContent = 'Testing…';
+  await fetchHearthIdentity({
+    url: document.getElementById('hearthUrl').value.trim(),
+    replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+    token: document.getElementById('hearthToken').value
+  });
+  renderHearthControls();
+}
+
+async function fetchHearthIdentity(body) {
+  const gen = hearthGen;
+  let res;
+  try {
+    const resp = await fetch('/api/hearth/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    res = await resp.json();
+  } catch (e) {
+    res = {error: e.message};
+  }
+  if (gen !== hearthGen) return; // the station changed while this was in flight
+  const el = document.getElementById('hearthIdentity');
+  if (res.error) {
+    hearthIdentity = null;
+    el.className = 'station-note error';
+    el.textContent = '✗ ' + res.error;
+    return;
+  }
+  hearthIdentity = res;
+  const who = res.owner ? 'owner' : res.name + ' · ' + (res.scopes || []).join(', ');
+  el.className = 'station-note';
+  el.textContent = '✓ ' + who + (res.replica ? ' (via replica)' : '');
+}
+
+function canUseHearth(scope) {
+  return !!hearthIdentity && (hearthIdentity.owner || (hearthIdentity.scopes || []).includes(scope));
+}
+
+async function pollHearth() {
+  const gen = hearthGen;
+  if (hearthPollGen === gen) return; // this station's poll is already in flight
+  hearthPollGen = gen;
+  let status;
+  try {
+    const resp = await fetch('/api/hearth/status');
+    status = await resp.json();
+  } catch (e) {
+    status = {source: 'unreachable', error: e.message};
+  } finally {
+    if (hearthPollGen === gen) hearthPollGen = null;
+  }
+  if (gen !== hearthGen) return; // the station changed; this status is for the old one
+  hearthStatus = status;
+  renderHearthStatus();
+}
+
+function fmtAge(sec) {
+  if (sec < 90) return sec + 's';
+  if (sec < 5400) return Math.round(sec / 60) + 'm';
+  return (sec / 3600).toFixed(1) + 'h';
+}
+
+function ageSec(iso) {
+  return Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+}
+
+function fmtClock(iso) {
+  return new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+function describeK4(k4) {
+  switch (k4.card_state) {
+    case 'on': {
+      let t = 'ON';
+      if (k4.freq_hz) t += ' · ' + (k4.freq_hz / 1e6).toFixed(3) + ' MHz';
+      if (k4.mode) t += ' · ' + k4.mode;
+      return t;
+    }
+    case 'off': return 'OFF';
+    case 'unreachable': return 'unreachable';
+    default: return 'unknown';
+  }
+}
+
+function describePowerSave(ps) {
+  if (!ps || !ps.enabled) return '—';
+  let t;
+  if (!ps.armed) t = 'disarmed';
+  else if (ps.phase === 'down' && ps.next_up_at) t = 'armed · down until ' + fmtClock(ps.next_up_at);
+  else t = 'armed · ' + (ps.phase || 'up');
+  if (ps.desired) {
+    t += ' · ' + (ps.desired === 'on' ? 'arm' : 'disarm') + ' queued';
+    if (ps.desired_by) t += ' by ' + ps.desired_by;
+    if (ps.desired_at) t += ' ' + fmtAge(ageSec(ps.desired_at)) + ' ago';
+  }
+  return t;
+}
+
+function renderHearthStatus() {
+  const s = hearthStatus;
+  if (!s) return;
+  const src = document.getElementById('stationSource');
+  if (s.source === 'pi') {
+    src.className = 'station-source live';
+    src.textContent = 'Pi · live';
+  } else if (s.source === 'replica') {
+    src.className = 'station-source warn';
+    let t = 'Replica · cabin dark, last heard ' + fmtAge(s.push_age_sec || 0) + ' ago';
+    const ps = s.powersave;
+    if (ps && ps.armed && ps.next_up_at) t += ', next window ' + fmtClock(ps.next_up_at);
+    if (ps && ps.overdue_sec > 0) t += ' — OVERDUE ' + fmtAge(ps.overdue_sec);
+    if (s.error) t += ' — ' + s.error;
+    src.textContent = t;
+  } else {
+    src.className = 'station-source warn';
+    src.textContent = 'Unreachable — ' + (s.error || 'no response');
+  }
+  document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
+  document.getElementById('psState').textContent = describePowerSave(s.powersave);
+  if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
+    const gen = hearthGen;
+    hearthIdentityFetchGen = gen;
+    fetchHearthIdentity({
+      url: document.getElementById('hearthUrl').value.trim(),
+      replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
+      token: document.getElementById('hearthToken').value
+    }).then(() => {
+      if (hearthIdentityFetchGen === gen) hearthIdentityFetchGen = null;
+      renderHearthControls();
+    });
+  }
+  renderHearthControls();
+}
+
+// effectiveArmed is the power-save state the station is heading for. On the
+// replica a queued change wins over the last pushed state, so the button can
+// reverse a queued arm or disarm before the cabin checks in.
+function effectiveArmed(s) {
+  const ps = s && s.powersave;
+  if (!ps) return false;
+  if (s.source === 'replica' && (ps.desired === 'on' || ps.desired === 'off')) return ps.desired === 'on';
+  return !!ps.armed;
+}
+
+function renderHearthControls() {
+  const s = hearthStatus;
+  const onPi = !!s && s.source === 'pi';
+  const onReplica = !!s && s.source === 'replica';
+  const k4 = s && s.k4;
+  const ps = s && s.powersave;
+
+  const k4ok = canUseHearth('k4') && onPi && !!k4;
+  document.getElementById('k4OnBtn').disabled = !(k4ok && k4.power_relay && k4.card_state !== 'on');
+  document.getElementById('k4OffBtn').disabled = !(k4ok && k4.card_state === 'on');
+
+  const psBtn = document.getElementById('psBtn');
+  psBtn.disabled = !(canUseHearth('powersave') && (onPi || onReplica) && ps && ps.enabled);
+  const verb = effectiveArmed(s) ? 'disarm' : 'arm';
+  psBtn.textContent = onReplica ? 'Queue ' + verb : verb.charAt(0).toUpperCase() + verb.slice(1);
+  psBtn.className = verb === 'arm' ? 'danger' : '';
+}
+
+function setStationMsg(text, isError) {
+  const el = document.getElementById('stationMsg');
+  el.className = 'station-note' + (isError ? ' error' : '');
+  el.textContent = text;
+}
+
+async function hearthPost(path, body) {
+  const gen = hearthGen;
+  const current = () => gen === hearthGen; // false once the station has changed
+  try {
+    const resp = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      if (current()) setStationMsg(text, true);
+      return null;
+    }
+    const res = await resp.json();
+    if (!current()) return null; // don't report the old station's result on the new one
+    if (res.error) setStationMsg(res.error, true);
+    return res;
+  } catch (e) {
+    if (current()) setStationMsg(e.message, true);
+    return null;
+  }
+}
+
+async function k4Power(power) {
+  if (power === 'off') {
+    let msg = 'Power OFF the cabin K4?';
+    if (sparksRunning) msg += '\n\nSparks is connected to it — the CAT link will drop.';
+    if (!confirm(msg)) return;
+  }
+  const res = await hearthPost('/api/hearth/k4', {power: power});
+  if (res && res.ok) {
+    setStationMsg(power === 'on' ? 'Pulsed power — waiting for the rig to come up' : 'Power-off sent', false);
+  }
+  pollHearth();
+}
+
+async function togglePowerSave() {
+  const s = hearthStatus;
+  const ps = s && s.powersave;
+  const onReplica = !!s && s.source === 'replica';
+  const arm = !effectiveArmed(s);
+  if (arm) {
+    let msg;
+    if (onReplica && ps && ps.armed) {
+      msg = 'Replace the queued disarm with arm? The cabin stays in power-save when it next checks in.';
+    } else if (onReplica) {
+      msg = 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.';
+    } else {
+      const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
+      msg = 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
+    }
+    if (!confirm(msg)) return;
+  }
+  const res = await hearthPost('/api/hearth/powersave', {armed: arm});
+  if (res && res.ok) {
+    setStationMsg(res.queued
+      ? 'Queued on the replica — the cabin picks it up at its next window'
+      : (arm ? 'Power-save armed' : 'Power-save disarmed'), false);
+  }
+  pollHearth();
 }
 
 init();

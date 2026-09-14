@@ -16,9 +16,21 @@ type AppConfig struct {
 	CATTransport  string         `json:"cat_transport"`
 	CATSerialPort string         `json:"cat_serial_port"`
 	CATSerialBaud int            `json:"cat_serial_baud"`
-	CATListen     string         `json:"cat_listen"`
+	CATPassword   string         `json:"cat_password,omitempty"`
+	CATListen          string         `json:"cat_listen"`
+	RadioServerListen  string         `json:"radio_server_listen"`
+	AmpURL             string         `json:"amp_url"`
+	LP100Port          string         `json:"lp100_port"`
 	KeyerSpeed    int            `json:"keyer_speed"`
-	MIDIDevice    string         `json:"midi_device"`
+	MIDIDevice    string         `json:"midi_device,omitempty"`
+	MIDIDevices   []string       `json:"midi_devices,omitempty"`
+	PaddleSwap     bool           `json:"paddle_swap"`
+	QK4Volume      bool           `json:"qk4_volume,omitempty"`
+	QK4Address     string         `json:"qk4_address,omitempty"`
+	HearthURL        string         `json:"hearth_url"`
+	HearthReplicaURL string         `json:"hearth_replica_url,omitempty"`
+	HearthToken      string         `json:"hearth_token,omitempty"`
+	HearthSite       string         `json:"hearth_site,omitempty"`
 	MinimizeToTray bool           `json:"minimize_to_tray"`
 	ProtocolTrace  bool           `json:"protocol_trace"`
 	Mappings       []MappingEntry `json:"mappings"`
@@ -65,12 +77,25 @@ func SaveAppConfig(path string, cfg *AppConfig) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// GetMIDIDevices returns the configured MIDI device names, merging legacy
+// single-device and multi-device fields for backward compatibility.
+func (c *AppConfig) GetMIDIDevices() []string {
+	if len(c.MIDIDevices) > 0 {
+		return c.MIDIDevices
+	}
+	if c.MIDIDevice != "" {
+		return []string{c.MIDIDevice}
+	}
+	return nil
+}
+
 // ToMIDIConfig converts AppConfig mappings to the MIDIConfig format
 // used by the existing MIDI driver.
 func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
 	mc := &midi.MIDIConfig{
-		Device:   c.MIDIDevice,
-		Mappings: make([]midi.MIDIMapping, len(c.Mappings)),
+		Devices:    c.GetMIDIDevices(),
+		PaddleSwap: c.PaddleSwap,
+		Mappings:   make([]midi.MIDIMapping, len(c.Mappings)),
 	}
 	for i, m := range c.Mappings {
 		mc.Mappings[i] = midi.MIDIMapping{

@@ -40,7 +40,7 @@ const (
 // the Winkeyer binary protocol into K4 CAT commands (KY, KS, etc).
 type Winkeyer struct {
 	port serial.Port
-	cat  *cat.CATClient
+	cat  cat.Radio
 
 	mu       sync.Mutex
 	hostOpen bool
@@ -52,8 +52,11 @@ type Winkeyer struct {
 	// CW buffer and echo — supports WinKeyer pointer commands for
 	// random-access writes (callsign correction). Null bytes (0x00) are
 	// placeholders inserted by pointer cmd 0x03; sendLoop skips them.
-	buffer   [BufferSize]byte // fixed CW buffer
-	bufLen   int              // high-water mark (bytes written)
+	// Positions are logical and only grow until the buffer is reclaimed.
+	// Position p is stored in buffer[p%BufferSize], so slots sendLoop has
+	// taken are reused and up to BufferSize unsent characters fit.
+	buffer   [BufferSize]byte // ring of CW characters
+	bufLen   int              // high-water mark (logical position after the last byte written)
 	readPos  int              // sendLoop read position
 	writePos int              // next write position for bufferChar
 	busy     bool
@@ -72,6 +75,12 @@ type Winkeyer struct {
 	writeMu sync.Mutex
 	closed  bool
 
+	// sendMu makes sendLoop's cancel check and its KY one step, and abort
+	// paths take it before SendAbort: a KY either reaches the radio before the
+	// abort or not at all. Lock order: mu → sendMu; sendLoop never takes mu
+	// while holding sendMu.
+	sendMu sync.Mutex
+
 	// RTTY state (FSK mode via admin 0x13)
 	rttyEnabled    bool               // FSK mode active
 	rttyInBracket  bool               // inside [...] text block (TX active)
@@ -80,12 +89,13 @@ type Winkeyer struct {
 	rttyAutoCRLF   bool               // auto CR/LF at end of transmission
 	rttyBaudRate   int                // 0=45.45, 1=50, 2=75, 3=100 baud
 	rttyDoneCancel context.CancelFunc // cancels the pending ] goroutine (PTT off)
+	rttyPTTActive  bool               // TX; sent, RX; not yet sent
 
 	// Protocol trace (verbose logging)
 	trace bool
 }
 
-func NewWinkeyer(c *cat.CATClient) *Winkeyer {
+func NewWinkeyer(c cat.Radio) *Winkeyer {
 	return &Winkeyer{
 		cat: c,
 		wpm: 25,
@@ -120,10 +130,21 @@ func (w *Winkeyer) OpenSerial(portName string) error {
 	return nil
 }
 
+// Close stops the keyer and closes the serial port. Anything still keying the
+// radio is released first: CW already handed to the radio is aborted, and an
+// active or pending RTTY transmission or tune carrier gets PTT off. An idle
+// keyer sends nothing, so Stop never unkeys a transmission started elsewhere.
 func (w *Winkeyer) Close() {
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
 	w.closed = true
+	stop, _ := w.stopKeyingLocked()
 	w.mu.Unlock()
+
+	w.sendStop(stop)
 	if w.port != nil {
 		w.port.Close()
 	}
@@ -164,6 +185,12 @@ func (w *Winkeyer) Run() {
 func (w *Winkeyer) processByte(b byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// Close has released everything the keyer held. A byte Run read before the
+	// port finished closing must not key the radio again.
+	if w.closed {
+		return
+	}
 
 	if w.trace {
 		if b >= 0x20 && b <= 0x7E {
@@ -269,24 +296,11 @@ func (w *Winkeyer) execAdmin() {
 	switch w.adminCode {
 	case 0x01: // Reset
 		w.hostOpen = false
-		wasRTTY := w.rttyEnabled
-		wasInBracket := w.rttyInBracket
+		// Stop first: stopKeyingLocked reads the RTTY/tune/CW state it clears,
+		// including a pending ] release that has no open bracket any more.
+		stop, _ := w.stopKeyingLocked()
 		w.rttyEnabled = false
-		w.rttyInBracket = false
-		w.rttyBuf = nil
-		if w.rttyDoneCancel != nil {
-			w.rttyDoneCancel()
-			w.rttyDoneCancel = nil
-		}
-		w.clearBuffer()
-		if wasRTTY {
-			go func() {
-				w.cat.SetCWMode()
-				if wasInBracket {
-					w.cat.SetPTT(false)
-				}
-			}()
-		}
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 		log.Printf("WK: admin reset")
 
 	case 0x02: // Host Open
@@ -297,24 +311,11 @@ func (w *Winkeyer) execAdmin() {
 
 	case 0x03: // Host Close
 		w.hostOpen = false
-		wasRTTY := w.rttyEnabled
-		wasInBracket := w.rttyInBracket
+		// Stop first, as in Reset: the logger is leaving, so nothing it
+		// started — CW, RTTY, a pending ] release, a tune carrier — stays keyed.
+		stop, _ := w.stopKeyingLocked()
 		w.rttyEnabled = false
-		w.rttyInBracket = false
-		w.rttyBuf = nil
-		if w.rttyDoneCancel != nil {
-			w.rttyDoneCancel()
-			w.rttyDoneCancel = nil
-		}
-		w.clearBuffer()
-		if wasRTTY {
-			go func() {
-				w.cat.SetCWMode()
-				if wasInBracket {
-					w.cat.SetPTT(false)
-				}
-			}()
-		}
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 		log.Printf("WK: host close")
 
 	case 0x04: // Echo Test
@@ -350,7 +351,8 @@ func (w *Winkeyer) execAdmin() {
 	case 0x12: // Set high baud (9600)
 		log.Printf("WK: set 9600 baud (not supported)")
 
-	case 0x13: // FSK mode
+	case 0x13: // FSK mode — controls WinKeyer FSK hardware output, NOT radio mode.
+		// N1MM manages the radio mode itself; sending MD3/MD6 here fights it.
 		if len(w.params) >= 2 {
 			p1 := w.params[0]
 			w.rttyEnabled = p1&0x80 != 0
@@ -359,12 +361,10 @@ func (w *Winkeyer) execAdmin() {
 			w.rttyBaudRate = int(p1 & 0x03)
 			if w.rttyEnabled {
 				log.Printf("WK: FSK mode ON (diddle=%v autoCRLF=%v baud=%d)", w.rttyDiddle, w.rttyAutoCRLF, w.rttyBaudRate)
-				go w.cat.SetDataMode()
 			} else {
 				log.Printf("WK: FSK mode OFF")
 				w.rttyInBracket = false
 				w.rttyBuf = nil
-				go w.cat.SetCWMode()
 			}
 		}
 
@@ -406,6 +406,12 @@ func (w *Winkeyer) execCommand() {
 		if len(w.params) > 0 {
 			w.paused = w.params[0] != 0
 			log.Printf("WK: pause = %v", w.paused)
+			// sendLoop exits when it sees the pause and leaves the rest of the
+			// buffer queued; restart it once the host unpauses. The !busy check
+			// keeps a paused loop that hasn't exited yet from getting a twin.
+			if !w.paused && !w.busy && w.readPos < w.bufLen {
+				w.startSendLoopLocked()
+			}
 		}
 
 	case 0x07: // Get speed pot
@@ -417,31 +423,38 @@ func (w *Winkeyer) execCommand() {
 		w.writeByte(0x80 | (potVal & 0x3F))
 
 	case 0x08: // Backspace
+		// Back up over the last character sendLoop hasn't taken. At the end of
+		// the buffer that removes it; after a pointer move it only moves the
+		// write position back, so the next character overwrites.
 		if w.writePos > w.readPos {
+			if w.writePos == w.bufLen {
+				w.bufLen--
+			}
 			w.writePos--
-			w.updateXoff()
+			if w.updateXoff() {
+				w.sendStatusLocked()
+			}
 		}
 
 	case 0x09: // Pin config
 		// Ignored
 
 	case 0x0A: // Clear buffer
-		wasBusy := w.busy
-		wasRTTYBracket := w.rttyInBracket
-		w.clearBuffer()
-		log.Printf("WK: clear buffer")
-		if wasRTTYBracket {
-			w.cat.SendRTTYEOT()
-			w.cat.SetPTT(false)
-		} else if wasBusy {
-			w.cat.SendAbort()
+		// Stops CW, an RTTY bracket or its pending ] release, and a tune carrier.
+		stop, statusChanged := w.stopKeyingLocked()
+		if statusChanged {
+			w.sendStatusLocked()
 		}
+		log.Printf("WK: clear buffer")
+		w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 
 	case 0x0B: // Key immediate (tune)
 		if len(w.params) > 0 {
 			w.tuning = w.params[0] != 0
 			log.Printf("WK: key immediate = %v", w.tuning)
-			go w.cat.SetPTT(w.tuning)
+			// Synchronous under mu (not a goroutine), so tune on and tune off
+			// reach the radio in the order the host sent them.
+			w.cat.SetPTT(w.tuning)
 			w.sendStatusLocked()
 		}
 
@@ -488,6 +501,7 @@ func (w *Winkeyer) execCommand() {
 		}
 		switch sub {
 		case 0x00: // Reset buffer pointer to start
+			w.reclaimDrainedBuffer()
 			w.writePos = 0
 		case 0x01: // Move pointer to position (overwrite mode)
 			pos := int(w.params[1])
@@ -502,11 +516,13 @@ func (w *Winkeyer) execCommand() {
 		case 0x03: // Add nulls (create space for corrections)
 			count := int(w.params[1])
 			end := w.writePos + count
-			if end > BufferSize {
-				end = BufferSize
+			if limit := w.readPos + BufferSize; end > limit {
+				end = limit
 			}
-			for i := w.writePos; i < end; i++ {
-				w.buffer[i] = 0
+			// Never clear below readPos: that slot may already hold a later,
+			// unsent character.
+			for i := max(w.writePos, w.readPos); i < end; i++ {
+				w.buffer[i%BufferSize] = 0
 			}
 			w.writePos = end
 			if end > w.bufLen {
@@ -565,17 +581,39 @@ func (w *Winkeyer) execCommand() {
 	}
 }
 
+// reclaimDrainedBuffer rewinds the buffer to position 0 once everything
+// written has been sent, so a host that resets the pointer or appends at 0
+// addresses the same slots it wrote before. It only rewinds when nothing is sending, nothing is left to send, and
+// writePos is at the end — a pointer command parked mid-buffer for a late
+// overwrite must not make stale characters send again.
+// Must be called with w.mu held.
+func (w *Winkeyer) reclaimDrainedBuffer() {
+	if w.busy || w.readPos < w.bufLen || w.writePos != w.bufLen {
+		return
+	}
+	w.bufLen, w.readPos, w.writePos = 0, 0, 0
+}
+
 // bufferChar adds a character to the CW buffer and triggers sending.
 // Writes at the current writePos (set by pointer commands).
 // Must be called with w.mu held.
 func (w *Winkeyer) bufferChar(ch byte) {
 	ch = byte(unicode.ToUpper(rune(ch)))
 
-	if w.writePos >= BufferSize {
+	w.reclaimDrainedBuffer()
+	// An overwrite at a position sendLoop has already taken is too late to
+	// send, and its slot may be reused. Skip the write but advance the
+	// pointer, so the rest of the correction lands on unsent positions.
+	if w.writePos < w.readPos {
+		w.writePos++
+		return
+	}
+	// The limit is BufferSize characters not yet sent.
+	if w.writePos-w.readPos >= BufferSize {
 		return // Buffer full, drop character
 	}
 
-	w.buffer[w.writePos] = ch
+	w.buffer[w.writePos%BufferSize] = ch
 	w.writePos++
 	if w.writePos > w.bufLen {
 		w.bufLen = w.writePos
@@ -583,17 +621,26 @@ func (w *Winkeyer) bufferChar(ch byte) {
 	if w.trace {
 		log.Printf("WK trace: buffer '%c' @%d (len=%d)", ch, w.writePos-1, w.bufLen)
 	}
-	wasBusy := w.busy
+	if w.busy {
+		if w.updateXoff() {
+			w.sendStatusLocked()
+		}
+		return
+	}
+	w.startSendLoopLocked()
+}
+
+// startSendLoopLocked marks the keyer busy, reports the status change, and
+// starts a sendLoop with its own done/cancel channels. Used when a character
+// arrives while idle, and when the host unpauses with CW still queued.
+// Must be called with w.mu held and w.busy false.
+func (w *Winkeyer) startSendLoopLocked() {
 	w.busy = true
 	w.updateXoff()
-
-	if !wasBusy {
-		w.sendStatusLocked()
-		// Start the echo/send goroutine with its own done/cancel channels
-		w.echoDone = make(chan struct{})
-		w.cancel = make(chan struct{})
-		go w.sendLoop(w.echoDone, w.cancel)
-	}
+	w.sendStatusLocked()
+	w.echoDone = make(chan struct{})
+	w.cancel = make(chan struct{})
+	go w.sendLoop(w.echoDone, w.cancel)
 }
 
 // sendLoop drains the buffer, sends KY commands, and echoes characters.
@@ -605,10 +652,12 @@ func (w *Winkeyer) bufferChar(ch byte) {
 func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	defer close(done)
 
-	// Brief coalescing delay — at 1200 baud bytes arrive every ~9ms,
-	// wait to accumulate a few chars before sending the first chunk.
+	// Coalescing delay — at 1200 baud bytes arrive every ~9ms; a 12-char
+	// CQ message takes ~110ms. Wait long enough to capture the full
+	// message in one KY chunk — splitting into multiple KY commands
+	// causes audible gaps because the K4 drops out of TX between them.
 	select {
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(120 * time.Millisecond):
 	case <-cancel:
 		return
 	}
@@ -644,7 +693,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 		// larger chunks reduce inter-KY gaps that cause extra spacing.
 		var chunk []byte
 		for w.readPos < w.bufLen && len(chunk) < KYChunkSize {
-			ch := w.buffer[w.readPos]
+			ch := w.buffer[w.readPos%BufferSize]
 			if ch == 0 {
 				break // stop at null — don't advance past it
 			}
@@ -659,7 +708,7 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 			// sufficient delay for the host to fill positions via
 			// pointer commands.
 			skipped := false
-			for w.readPos < w.bufLen && w.buffer[w.readPos] == 0 {
+			for w.readPos < w.bufLen && w.buffer[w.readPos%BufferSize] == 0 {
 				w.readPos++
 				skipped = true
 			}
@@ -680,18 +729,24 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 
 		wpm := w.wpm
 		echoEnabled := w.modeReg&0x04 != 0
-		w.updateXoff()
+		if w.updateXoff() {
+			w.sendStatusLocked()
+		}
 		w.mu.Unlock()
 
-		// Check cancel before sending — abort should prevent new KY
+		// Check cancel and send under sendMu, so an abort can't slip in
+		// between: the KY reaches the radio before the abort or not at all.
+		w.sendMu.Lock()
 		select {
 		case <-cancel:
+			w.sendMu.Unlock()
 			return
 		default:
 		}
 
 		// Send KY command to K4 — K4 break-in handles PTT automatically
 		w.cat.SendKY(string(chunk))
+		w.sendMu.Unlock()
 		if w.trace {
 			log.Printf("WK trace: KY \"%s\" (%d chars)", string(chunk), len(chunk))
 		}
@@ -714,9 +769,13 @@ func (w *Winkeyer) sendLoop(done, cancel chan struct{}) {
 	}
 }
 
-// clearBuffer aborts CW and resets buffer state.
+// clearBuffer aborts CW and resets buffer state. It returns true if the status
+// byte changed; the caller decides whether to report it. WK3 only sends status
+// on a change, and Host Open must reply with nothing but the version byte —
+// N1MM treats a stray idle status at message start as "message complete".
 // Must be called with w.mu held.
-func (w *Winkeyer) clearBuffer() {
+func (w *Winkeyer) clearBuffer() bool {
+	prevStatus := w.statusByteLocked()
 	if w.trace {
 		log.Printf("WK trace: clear (was %d chars)", w.bufLen-w.readPos)
 	}
@@ -742,7 +801,48 @@ func (w *Winkeyer) clearBuffer() {
 		// PTT off handled by caller (execCommand 0x0A or execAdmin reset)
 	}
 	w.rttyBuf = nil
-	w.sendStatusLocked()
+	return w.statusByteLocked() != prevStatus
+}
+
+// keyingStop is what a stop path must still send to unkey the radio.
+type keyingStop struct {
+	abortCW    bool // CW or RTTY text handed to the radio may still be keying
+	releasePTT bool // an RTTY bracket, its pending ] release, or a tune carrier holds PTT
+}
+
+// stopKeyingLocked cancels everything that may be keying the radio — the CW
+// sendLoop, an RTTY bracket or its pending ] release, a tune carrier — and
+// reports what must still go out, plus whether the status byte changed. Pass
+// the result to sendStop; holding mu while doing so is fine, since sendLoop
+// never takes mu while holding sendMu.
+// Must be called with w.mu held.
+func (w *Winkeyer) stopKeyingLocked() (keyingStop, bool) {
+	rtty := w.rttyInBracket || w.rttyDoneCancel != nil
+	stop := keyingStop{
+		abortCW:    w.busy || rtty,
+		releasePTT: rtty || w.rttyPTTActive || w.tuning,
+	}
+	prevStatus := w.statusByteLocked()
+	w.tuning = false
+	w.rttyPTTActive = false
+	w.clearBuffer() // stops sendLoop, cancels a pending ] release, ends the bracket
+	return stop, w.statusByteLocked() != prevStatus
+}
+
+// sendStop unkeys the radio as stopKeyingLocked decided. sendMu makes the
+// abort follow any KY sendLoop has already committed to, instead of preceding it.
+func (w *Winkeyer) sendStop(stop keyingStop) {
+	if !stop.abortCW && !stop.releasePTT {
+		return
+	}
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	if stop.abortCW {
+		w.cat.SendAbort()
+	}
+	if stop.releasePTT {
+		w.cat.SetPTT(false)
+	}
 }
 
 // handleRTTYChar processes a character in RTTY/FSK mode.
@@ -757,25 +857,30 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		}
 		w.rttyBuf = w.rttyBuf[:0]
 		w.rttyInBracket = true
-		w.cat.SetPTT(true)
+		if !w.rttyPTTActive {
+			w.cat.SetPTT(true)
+			w.rttyPTTActive = true
+		}
 		if w.trace {
-			log.Printf("WK trace: RTTY [ → PTT on")
+			log.Printf("WK trace: RTTY [ → PTT on (was=%v)", w.rttyPTTActive)
 		}
 
-	case ']': // End TX — flush text + EOT, delayed PTT off (cancellable by next [)
+	case ']': // End TX — flush text, delayed PTT off (cancellable by next [)
 		if w.rttyInBracket {
 			text := w.rttyTakeBuf()
 			w.rttyInBracket = false
 			txDelay := w.rttyTxDelay(len(text))
 			if w.trace {
-				log.Printf("WK trace: RTTY ] → flush %q + EOT + PTT off (wait %v)", text, txDelay)
+				log.Printf("WK trace: RTTY ] → flush %q + PTT off (wait %v)", text, txDelay)
 			}
 			// Send remaining text synchronously for correct wire ordering
 			if text != "" {
 				w.cat.SendRTTYText(text)
 			}
-			// Goroutine: brief coalescing delay → EOT → txDelay → RX
-			// If next [ arrives within 30ms, ctx is cancelled → skip EOT+RX (merge)
+			// Goroutine: coalescing delay → txDelay → RX
+			// If next [ arrives within 30ms, ctx is cancelled → skip RX (merge)
+			// No KY |; (EOT) — we control PTT with RX; after the Baudot delay.
+			// Sending EOT too early causes the K4 to drop TX prematurely.
 			ctx, cancel := context.WithCancel(context.Background())
 			w.rttyDoneCancel = cancel
 			go func() {
@@ -784,12 +889,24 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 				case <-ctx.Done():
 					return
 				}
-				w.cat.SendRTTYEOT()
 				select {
 				case <-time.After(txDelay):
-					w.cat.SetPTT(false)
 				case <-ctx.Done():
+					return
 				}
+				// Re-check under mu: a '[' or clear that cancelled this worker
+				// while its timer fired owns the PTT state now. Otherwise this
+				// transmission is done — release PTT and clear the pending
+				// state, so Close and clear buffer don't send a stray RX.
+				w.mu.Lock()
+				defer w.mu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+				w.cat.SetPTT(false)
+				w.rttyPTTActive = false
+				w.rttyDoneCancel = nil
+				cancel()
 			}()
 		}
 
@@ -798,6 +915,7 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		if w.rttyInBracket {
 			w.rttyInBracket = false
 			w.cat.SetPTT(false)
+			w.rttyPTTActive = false
 			if w.trace {
 				log.Printf("WK trace: RTTY \\ → abort, PTT off")
 			}
@@ -806,23 +924,16 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 	case '}': // CR/LF
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, '\r', '\n')
-			if len(w.rttyBuf) >= 24 {
-				w.rttyFlushLocked()
-			}
 		}
 
 	case '{': // RYRYRY test pattern
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, []byte("RYRYRYRYRY")...)
-			w.rttyFlushLocked()
 		}
 
 	default:
 		if w.rttyInBracket {
 			w.rttyBuf = append(w.rttyBuf, byte(unicode.ToUpper(rune(b))))
-			if len(w.rttyBuf) >= 24 {
-				w.rttyFlushLocked()
-			}
 		} else {
 			// Outside brackets — pass through to CW buffer
 			w.bufferChar(b)
@@ -844,19 +955,6 @@ func (w *Winkeyer) rttyTakeBuf() string {
 	text := strings.ToUpper(string(w.rttyBuf))
 	w.rttyBuf = w.rttyBuf[:0]
 	return text
-}
-
-// rttyFlushLocked sends accumulated RTTY text in 24-char KY chunks.
-// Must be called with w.mu held.
-func (w *Winkeyer) rttyFlushLocked() {
-	text := w.rttyTakeBuf()
-	if text == "" {
-		return
-	}
-	if w.trace {
-		log.Printf("WK trace: RTTY flush %q (%d chars)", text, len(text))
-	}
-	w.cat.SendRTTYText(text)
 }
 
 // rttyTxDelay estimates how long the K4 needs to transmit n characters of RTTY.
@@ -882,17 +980,23 @@ func (w *Winkeyer) rttyTxDelay(n int) time.Duration {
 	return time.Duration(float64(n)*msPerChar+1000) * time.Millisecond
 }
 
-func (w *Winkeyer) updateXoff() {
+// updateXoff recomputes XOFF from the characters sendLoop hasn't taken and
+// reports whether it changed. The host pauses while XOFF is set and resumes
+// when it clears, so a caller that doesn't send status anyway must report a
+// change. Must be called with w.mu held.
+func (w *Winkeyer) updateXoff() bool {
+	prev := w.xoff
 	remaining := w.bufLen - w.readPos
 	if remaining >= XoffThreshold {
 		w.xoff = true
 	} else if remaining < XonThreshold {
 		w.xoff = false
 	}
+	return w.xoff != prev
 }
 
-// sendStatusLocked sends a status byte. Must be called with w.mu held.
-func (w *Winkeyer) sendStatusLocked() {
+// statusByteLocked returns the current status byte. Must be called with w.mu held.
+func (w *Winkeyer) statusByteLocked() byte {
 	status := byte(0xC0)
 	if w.busy {
 		status |= StatusBusy
@@ -903,6 +1007,12 @@ func (w *Winkeyer) sendStatusLocked() {
 	if w.tuning {
 		status |= StatusKeyDown
 	}
+	return status
+}
+
+// sendStatusLocked sends a status byte. Must be called with w.mu held.
+func (w *Winkeyer) sendStatusLocked() {
+	status := w.statusByteLocked()
 	if w.trace {
 		log.Printf("WK trace: tx status 0x%02x", status)
 	}

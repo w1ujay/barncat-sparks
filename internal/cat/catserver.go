@@ -61,6 +61,11 @@ func (s *CATServer) Run() {
 // handleClient relays commands from a TCP client to the radio via CATClient.
 func (s *CATServer) handleClient(conn net.Conn) {
 	s.mu.Lock()
+	if s.clients == nil { // accepted just before Close
+		s.mu.Unlock()
+		conn.Close()
+		return
+	}
 	s.clients[conn] = struct{}{}
 	s.mu.Unlock()
 

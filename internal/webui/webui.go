@@ -17,6 +17,7 @@ import (
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
 	"github.com/ujay/barncat-sparks/internal/keyer"
+	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
 )
 
@@ -30,10 +31,13 @@ type WebUI struct {
 	cfgPath   string
 	running   bool
 	statusMsg string
-	cat       *cat.CATClient
-	wk        *keyer.Winkeyer
-	midiDrv   *midi.MIDIDriver
-	catServer *cat.CATServer
+	cat          cat.Radio
+	qk4VolumeCat *cat.CATClient // optional QK4 connection for volume routing
+	wk           *keyer.Winkeyer
+	midiDrv      *midi.MIDIDriver
+	catServer   *cat.CATServer
+	radioServer *cat.RadioServer
+	lp100       *lp100a.Driver
 	server    *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
@@ -68,10 +72,15 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/serial-ports", w.handleSerialPorts)
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
+	mux.HandleFunc("/api/control-names", w.handleControlNames)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
 	mux.HandleFunc("/api/about", w.handleAbout)
+	mux.HandleFunc("/api/hearth/status", w.handleHearthStatus)
+	mux.HandleFunc("/api/hearth/test", w.handleHearthTest)
+	mux.HandleFunc("/api/hearth/k4", w.handleHearthK4)
+	mux.HandleFunc("/api/hearth/powersave", w.handleHearthPowerSave)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -196,29 +205,37 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Connect CAT (TCP or serial)
-	w.cat = cat.NewCATClient()
+	client := cat.NewCATClient()
 	switch w.config.CATTransport {
 	case "serial":
 		w.statusMsg = "Connecting to radio via serial..."
-		if err := w.cat.ConnectSerial(w.config.CATSerialPort, w.config.CATSerialBaud); err != nil {
+		if err := client.ConnectSerial(w.config.CATSerialPort, w.config.CATSerialBaud); err != nil {
 			w.statusMsg = fmt.Sprintf("CAT serial error: %v", err)
-			w.cat = nil
 			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 			return
 		}
 	default:
-		w.statusMsg = "Connecting to radio via TCP..."
-		if err := w.cat.ConnectTCP(w.config.CATAddress); err != nil {
-			w.statusMsg = fmt.Sprintf("CAT TCP error: %v", err)
-			w.cat = nil
-			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
-			return
+		if w.config.CATPassword != "" {
+			w.statusMsg = "Connecting to radio via K4 auth..."
+			if err := client.ConnectK4(w.config.CATAddress, w.config.CATPassword); err != nil {
+				w.statusMsg = fmt.Sprintf("K4 auth error: %v", err)
+				writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
+				return
+			}
+		} else {
+			w.statusMsg = "Connecting to radio via TCP..."
+			if err := client.ConnectTCP(w.config.CATAddress); err != nil {
+				w.statusMsg = fmt.Sprintf("CAT TCP error: %v", err)
+				writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
+				return
+			}
 		}
 	}
+	w.cat = client
 
 	// Start CATServer if listen address configured
 	if w.config.CATListen != "" {
-		srv, err := cat.NewCATServer(w.cat, w.config.CATListen)
+		srv, err := cat.NewCATServer(client, w.config.CATListen)
 		if err != nil {
 			w.statusMsg = fmt.Sprintf("CATServer error: %v", err)
 			// Non-fatal — continue without server
@@ -228,15 +245,56 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Start RadioServer if listen address configured.
+	// Run() is deferred until after all Handle() calls (amp proxy, LP-100A, etc.).
+	if w.config.RadioServerListen != "" {
+		rsrv, err := cat.NewRadioServer(w.cat, w.config.RadioServerListen)
+		if err != nil {
+			w.statusMsg = fmt.Sprintf("RadioServer error: %v", err)
+			// Non-fatal — continue without server
+		} else {
+			if w.config.AmpURL != "" {
+				if err := rsrv.SetAmpProxy(w.config.AmpURL); err != nil {
+					log.Printf("RadioServer: amp proxy error: %v", err)
+				}
+			}
+			w.radioServer = rsrv
+		}
+	}
+
+	// Start LP-100A if port configured
+	if w.config.LP100Port != "" {
+		lp := lp100a.NewDriver(w.config.LP100Port)
+		if err := lp.Connect(); err != nil {
+			log.Printf("LP-100A: %v", err)
+			// Non-fatal — continue without wattmeter
+		} else {
+			lp.StartPolling()
+			w.lp100 = lp
+			if w.radioServer != nil {
+				h := lp.HTTPHandler()
+				w.radioServer.Handle("/api/lp100a", h)
+				w.radioServer.Handle("/api/lp100a/", h)
+			}
+		}
+	}
+
+	// Start RadioServer now that all HTTP handlers are registered
+	if w.radioServer != nil {
+		go w.radioServer.Run()
+	}
+
 	// Start WinKeyer if serial port selected
 	if w.config.SerialPort != "" {
 		w.wk = keyer.NewWinkeyer(w.cat)
 		w.wk.SetWPM(w.config.KeyerSpeed)
 		if err := w.wk.OpenSerial(w.config.SerialPort); err != nil {
-			w.statusMsg = fmt.Sprintf("Serial error: %v", err)
-			w.cat.Close()
-			w.cat = nil
+			// Fatal: roll back everything started above (servers, wattmeter,
+			// CAT) so a retry can bind the same listen addresses.
+			msg := fmt.Sprintf("Serial error: %v", err)
 			w.wk = nil
+			w.stopLocked()
+			w.statusMsg = msg
 			writeJSON(rw, statusResponse{Running: false, Message: w.statusMsg})
 			return
 		}
@@ -247,10 +305,27 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start MIDI if device selected
-	if w.config.MIDIDevice != "" {
+	// Start MIDI if any device selected
+	if len(w.config.GetMIDIDevices()) > 0 {
 		midiCfg := w.config.ToMIDIConfig()
 		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
+
+		// Route volume commands to QK4 if enabled
+		if w.config.QK4Volume {
+			addr := w.config.QK4Address
+			if addr == "" {
+				addr = "127.0.0.1:9299"
+			}
+			qk4 := cat.NewCATClient()
+			if err := qk4.ConnectTCP(addr); err != nil {
+				log.Printf("QK4 volume route: %v (volume will use main radio)", err)
+			} else {
+				w.qk4VolumeCat = qk4
+				w.midiDrv.SetVolumeCat(qk4)
+				log.Printf("QK4 volume route: connected to %s", addr)
+			}
+		}
+
 		go func() {
 			if err := w.midiDrv.Run(); err != nil {
 				w.mu.Lock()
@@ -266,16 +341,29 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	case "serial":
 		status = fmt.Sprintf("Running — Radio: %s (%d baud)", w.config.CATSerialPort, w.config.CATSerialBaud)
 	default:
-		status = fmt.Sprintf("Running — Radio: %s (TCP)", w.config.CATAddress)
+		if w.config.CATPassword != "" {
+			status = fmt.Sprintf("Running — Radio: %s (K4 auth)", w.config.CATAddress)
+		} else {
+			status = fmt.Sprintf("Running — Radio: %s (TCP)", w.config.CATAddress)
+		}
 	}
 	if w.config.CATListen != "" {
 		status += fmt.Sprintf(", Server: %s", w.config.CATListen)
 	}
+	if w.config.RadioServerListen != "" {
+		status += fmt.Sprintf(", RadioServer: %s", w.config.RadioServerListen)
+		if w.config.AmpURL != "" {
+			status += fmt.Sprintf(" (amp: %s)", w.config.AmpURL)
+		}
+	}
+	if w.lp100 != nil {
+		status += fmt.Sprintf(", LP-100A: %s", w.config.LP100Port)
+	}
 	if w.config.SerialPort != "" {
 		status += fmt.Sprintf(", WinKeyer: %s", w.config.SerialPort)
 	}
-	if w.config.MIDIDevice != "" {
-		status += fmt.Sprintf(", MIDI: %s", w.config.MIDIDevice)
+	if devs := w.config.GetMIDIDevices(); len(devs) > 0 {
+		status += fmt.Sprintf(", MIDI: %s", strings.Join(devs, ", "))
 	}
 	w.statusMsg = status
 
@@ -315,9 +403,22 @@ func (w *WebUI) stopLocked() {
 		w.midiDrv.Close()
 		w.midiDrv = nil
 	}
+	if w.qk4VolumeCat != nil {
+		w.qk4VolumeCat.Close()
+		w.qk4VolumeCat = nil
+	}
 	if w.wk != nil {
 		w.wk.Close()
 		w.wk = nil
+	}
+	if w.lp100 != nil {
+		w.lp100.StopPolling()
+		w.lp100.Disconnect()
+		w.lp100 = nil
+	}
+	if w.radioServer != nil {
+		w.radioServer.Close()
+		w.radioServer = nil
 	}
 	if w.catServer != nil {
 		w.catServer.Close()
@@ -386,6 +487,10 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 		actions[i] = a
 	}
 	writeJSON(rw, actions)
+}
+
+func (w *WebUI) handleControlNames(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, config.ControlMaps)
 }
 
 func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
@@ -476,7 +581,7 @@ func (w *WebUI) handleDecode(rw http.ResponseWriter, r *http.Request) {
 }
 
 // decodeLoop polls the K4 text decoder every 250ms and accumulates text.
-func (w *WebUI) decodeLoop(ctx context.Context, c *cat.CATClient) {
+func (w *WebUI) decodeLoop(ctx context.Context, c cat.Radio) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {

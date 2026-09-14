@@ -1,0 +1,47 @@
+version: 2
+
+builds:
+  - main: ./cmd/barncat-sparks/
+    binary: barncat-sparks
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -H windowsgui
+      - -X github.com/ujay/barncat-sparks/internal/config.Version={{.Version}}
+    hooks:
+      pre:
+        - cmd: go-winres make
+          dir: cmd/barncat-sparks/
+
+archives:
+  - formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  name_template: "BarnCat Sparks v{{.Version}}"
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))?!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\(.+\))?!?:.+$'
+      order: 1
+    - title: Refactoring
+      regexp: '^.*?refactor(\(.+\))?!?:.+$'
+      order: 2
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))?!?:.+$'
+      order: 3
+    - title: Other
+      order: 999

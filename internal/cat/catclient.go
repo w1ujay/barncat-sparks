@@ -2,6 +2,8 @@ package cat
 
 import (
 	"bufio"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -21,11 +23,12 @@ type CATClient struct {
 	transport io.ReadWriteCloser
 	respCh    chan string
 	decodeCh  chan string // dedicated channel for TT (text decode) responses
+	queryMu   sync.Mutex  // serializes query transactions on respCh (drain, send, await)
 
-	// Response relays — all responses are broadcast to every writer in this list
-	// (used by CATServer to forward responses to multiple TCP clients).
+	// Response relays — every response is queued to each relay's own writer
+	// goroutine (used by CATServer to forward responses to TCP clients); see relay.go.
 	relayMu sync.Mutex
-	relays  []io.Writer
+	relays  []*relay
 }
 
 // NewCATClient creates a new CATClient. Call ConnectTCP or ConnectSerial to connect.
@@ -70,24 +73,43 @@ func (c *CATClient) ConnectSerial(portName string, baud int) error {
 	return nil
 }
 
-// AddRelay adds an io.Writer that receives copies of all radio responses.
-// Used by CATServer to broadcast to multiple TCP clients.
-func (c *CATClient) AddRelay(w io.Writer) {
-	c.relayMu.Lock()
-	c.relays = append(c.relays, w)
-	c.relayMu.Unlock()
-}
-
-// RemoveRelay removes an io.Writer from the relay list.
-func (c *CATClient) RemoveRelay(w io.Writer) {
-	c.relayMu.Lock()
-	for i, r := range c.relays {
-		if r == w {
-			c.relays = append(c.relays[:i], c.relays[i+1:]...)
-			break
-		}
+// ConnectK4 connects to a K4 radio on its authenticated TCP port (9205).
+// The password is hashed with SHA-384 and sent as a 96-char hex string.
+func (c *CATClient) ConnectK4(addr, password string) error {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("K4 auth connect: %w", err)
 	}
-	c.relayMu.Unlock()
+
+	// SHA-384 hash the password → 96-char lowercase hex
+	hash := sha512.Sum384([]byte(password))
+	hexHash := hex.EncodeToString(hash[:])
+
+	// Send hash raw on the socket (no framing)
+	if _, err := fmt.Fprint(conn, hexHash); err != nil {
+		conn.Close()
+		return fmt.Errorf("K4 auth send: %w", err)
+	}
+
+	// Read 1 byte — any data back means auth success
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var peek [1]byte
+	n, err := conn.Read(peek[:])
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("K4 auth failed: %w", err)
+	}
+	conn.SetReadDeadline(time.Time{}) // clear deadline
+
+	// Wrap conn to replay the consumed byte
+	wrapped := &prefixConn{Conn: conn, buf: peek[:n]}
+
+	c.mu.Lock()
+	c.transport = wrapped
+	c.mu.Unlock()
+	go c.readLoop()
+	log.Printf("CAT: connected to %s (K4 auth)", addr)
+	return nil
 }
 
 func (c *CATClient) Close() {
@@ -114,12 +136,8 @@ func (c *CATClient) readLoop() {
 		if resp == "" {
 			continue
 		}
-		// Broadcast to all CATServer TCP clients
-		c.relayMu.Lock()
-		for _, w := range c.relays {
-			fmt.Fprintf(w, "%s;", resp)
-		}
-		c.relayMu.Unlock()
+		// Queue for CATServer TCP clients; never blocks on a slow client.
+		c.broadcast(resp)
 
 		// Route TT (text decode) responses to dedicated channel
 		if strings.HasPrefix(resp, "TT") {
@@ -198,22 +216,51 @@ func (c *CATClient) SetPTT(on bool) error {
 	return c.Send(cmd)
 }
 
+// drainResponses discards any stale buffered responses in respCh.
+// Must be called before sending a query to ensure we read a fresh response.
+func (c *CATClient) drainResponses() {
+	for {
+		select {
+		case <-c.respCh:
+		default:
+			return
+		}
+	}
+}
+
+// query sends cmd and returns the payload of the first response starting with
+// prefix. The whole transaction holds queryMu: respCh is shared, so a
+// concurrent query could otherwise drain this reply, or receive it and discard
+// it as unmatched.
+func (c *CATClient) query(cmd, prefix string) (string, error) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	c.drainResponses()
+	if err := c.Send(cmd); err != nil {
+		return "", err
+	}
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case resp := <-c.respCh:
+			if strings.HasPrefix(resp, prefix) {
+				return resp[len(prefix):], nil
+			}
+		case <-timeout:
+			return "", fmt.Errorf("%s query timeout", prefix)
+		}
+	}
+}
+
 // QuerySpeed queries the current keyer speed from the K4.
 func (c *CATClient) QuerySpeed() (int, error) {
-	if err := c.Send("KS;"); err != nil {
+	resp, err := c.query("KS;", "KS")
+	if err != nil {
 		return 0, err
 	}
-	// Wait for response with timeout
-	select {
-	case resp := <-c.respCh:
-		if strings.HasPrefix(resp, "KS") {
-			var wpm int
-			fmt.Sscanf(resp[2:], "%d", &wpm)
-			return wpm, nil
-		}
-	case <-time.After(500 * time.Millisecond):
-	}
-	return 0, fmt.Errorf("KS query timeout")
+	var wpm int
+	fmt.Sscanf(resp, "%d", &wpm)
+	return wpm, nil
 }
 
 // SetFreqA sets VFO A frequency in Hz.
@@ -232,19 +279,13 @@ func (c *CATClient) SetFreqB(hz int) error {
 
 // GetFreqA queries VFO A frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqA() (int, error) {
-	if err := c.Send("FA;"); err != nil {
+	resp, err := c.query("FA;", "FA")
+	if err != nil {
 		return 0, err
 	}
-	select {
-	case resp := <-c.respCh:
-		if strings.HasPrefix(resp, "FA") {
-			var hz int
-			fmt.Sscanf(resp[2:], "%d", &hz)
-			return hz, nil
-		}
-	case <-time.After(500 * time.Millisecond):
-	}
-	return 0, fmt.Errorf("FA query timeout")
+	var hz int
+	fmt.Sscanf(resp, "%d", &hz)
+	return hz, nil
 }
 
 // SetVolume sets the K4 audio gain (0-60) for a receiver.
@@ -261,6 +302,17 @@ func (c *CATClient) SetVolume(recv, level int) error {
 		cmd = fmt.Sprintf("AG$%03d;", level)
 	} else {
 		cmd = fmt.Sprintf("AG%03d;", level)
+	}
+	log.Printf("CAT: %s", cmd)
+	return c.Send(cmd)
+}
+
+// ToggleRFGain toggles RF gain between full and reduced for a receiver.
+// recv: 0 = main, 1 = sub. K4 format: RG/; (main) or RG$/; (sub).
+func (c *CATClient) ToggleRFGain(recv int) error {
+	cmd := "RG/;"
+	if recv == 1 {
+		cmd = "RG$/;"
 	}
 	log.Printf("CAT: %s", cmd)
 	return c.Send(cmd)
@@ -353,19 +405,13 @@ func (c *CATClient) VFOBtoA() error {
 
 // GetFreqB queries VFO B frequency from the K4. Returns Hz.
 func (c *CATClient) GetFreqB() (int, error) {
-	if err := c.Send("FB;"); err != nil {
+	resp, err := c.query("FB;", "FB")
+	if err != nil {
 		return 0, err
 	}
-	select {
-	case resp := <-c.respCh:
-		if strings.HasPrefix(resp, "FB") {
-			var hz int
-			fmt.Sscanf(resp[2:], "%d", &hz)
-			return hz, nil
-		}
-	case <-time.After(500 * time.Millisecond):
-	}
-	return 0, fmt.Errorf("FB query timeout")
+	var hz int
+	fmt.Sscanf(resp, "%d", &hz)
+	return hz, nil
 }
 
 // SetRIT sets RIT on or off.
@@ -462,6 +508,16 @@ func (c *CATClient) SetNotchFreq(hz int) error {
 	return c.Send(cmd)
 }
 
+// SendCWElement sends a single CW element (dit or dah) via the KZ command.
+// The K4 times the element based on its current keyer speed.
+func (c *CATClient) SendCWElement(dit bool) error {
+	cmd := "KZ-;"
+	if dit {
+		cmd = "KZ.;"
+	}
+	return c.Send(cmd)
+}
+
 // SendCWMessage sends a CW text message via the KY command.
 func (c *CATClient) SendCWMessage(text string) error {
 	// Send in chunks of up to 24 chars
@@ -493,22 +549,14 @@ func (c *CATClient) SetCWMode() error {
 	return c.Send("MD3;")
 }
 
-// SendRTTYText sends RTTY text via KY commands in 24-char chunks.
+// SendRTTYText sends RTTY text via a single KY command.
 // In FSK-D mode the K4 encodes the ASCII text as Baudot.
+// The text is sent unchunked — the K4 drops back-to-back KY commands
+// because its internal buffer can only accept one at a time.
 func (c *CATClient) SendRTTYText(text string) error {
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > 24 {
-			chunk = chunk[:24]
-		}
-		text = text[len(chunk):]
-		cmd := fmt.Sprintf("KY %s;", chunk)
-		log.Printf("CAT: %s", cmd)
-		if err := c.Send(cmd); err != nil {
-			return err
-		}
-	}
-	return nil
+	cmd := fmt.Sprintf("KY %s;", text)
+	log.Printf("CAT: %s", cmd)
+	return c.Send(cmd)
 }
 
 // SendRTTYEOT sends the end-of-transmission marker for RTTY.
@@ -521,19 +569,13 @@ func (c *CATClient) SendRTTYEOT() error {
 // QueryMode queries the current operating mode from the radio.
 // Returns the mode number: 1=LSB, 2=USB, 3=CW, 4=FM, 5=AM, 6=DATA, 7=CW-REV, 9=DATA-REV.
 func (c *CATClient) QueryMode() (int, error) {
-	if err := c.Send("MD;"); err != nil {
+	resp, err := c.query("MD;", "MD")
+	if err != nil {
 		return 0, err
 	}
-	select {
-	case resp := <-c.respCh:
-		if strings.HasPrefix(resp, "MD") {
-			var mode int
-			fmt.Sscanf(resp[2:], "%d", &mode)
-			return mode, nil
-		}
-	case <-time.After(500 * time.Millisecond):
-	}
-	return 0, fmt.Errorf("MD query timeout")
+	var mode int
+	fmt.Sscanf(resp, "%d", &mode)
+	return mode, nil
 }
 
 // SetTextDecode enables or disables the K4's built-in text decoder.

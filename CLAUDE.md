@@ -46,8 +46,13 @@ internal/
     config.go                # AppConfig, load/save, ListSerialPorts
     actions.go               # ActionRegistry, ActionDef
     about.go                 # Version, contributors
+  hearth/                    # lempster-hearth control client (stdlib only)
+    client.go                # Client, errors, Pi→replica fallback, WhoAmI
+    status.go                # Status (K4 + power-save), replica merge
+    control.go               # K4Power, SetPowerSave
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
+    hearth.go                # /api/hearth/* — hearth status + K4/power-save controls
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)
     gui_other.go             # waitForGUI (app-mode browser)
@@ -71,11 +76,12 @@ N1MM Logger ↔ TCP ↔ CATServer (cat/) ──→ CATClient ──→ serial �
 
 ```
 cmd/barncat-sparks  →  webui, cat, keyer, midi, config
-webui               →  cat, keyer, midi, config
+webui               →  cat, keyer, midi, config, hearth
 config              →  midi  (for MIDIConfig/MIDIMapping in ToMIDIConfig)
 keyer               →  cat
 midi                →  cat
 cat                 →  (stdlib only)
+hearth              →  (stdlib only)
 ```
 
 ### Key Components
@@ -86,7 +92,7 @@ cat                 →  (stdlib only)
 
 - **`internal/cat/`** — Transport-agnostic CAT client. Connects to radios via TCP (`ConnectTCP`) or serial (`ConnectSerial`). Sends Elecraft CAT commands. Reads responses split on semicolons. CATServer accepts multiple TCP clients and relays commands to/from the radio.
 
-- **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte CW character buffer with XON/XOFF flow control. Includes Morse timing lookup for character echo pacing.
+- **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte ring buffer of CW characters (logical positions, slots reused once sendLoop takes them) with XON/XOFF flow control based on unsent characters. Includes Morse timing lookup for character echo pacing.
 
 - **`internal/midi/`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Maps MIDI events (CC, Note On/Off) to K4 actions. Windows driver uses `winmm.dll` syscalls; non-Windows builds use stubs.
 
@@ -94,7 +100,7 @@ cat                 →  (stdlib only)
 
 ### Concurrency Model
 
-The `Winkeyer` struct uses two mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. The `MIDIDriver` event loop processes MIDI events synchronously (one at a time); VFO tuning caches the frequency locally and throttles CAT sends to ~20/sec. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Lock order is always `Winkeyer.mu` → `CATClient.mu` to prevent deadlocks.
+The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes; `sendMu` makes sendLoop's cancel check and its `KY` one step, and the abort paths (`Close`, clear buffer) take it before `SendAbort`, so a `KY` reaches the radio before the abort or not at all. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. The `MIDIDriver` event loop processes MIDI events synchronously (one at a time); VFO tuning caches the frequency locally and throttles CAT sends to ~20/sec. MIDI PTT is sent synchronously under `MIDIDriver.mu` so press and release reach the radio in order; `Close` marks the driver closed and releases a held PTT, and no PTT is keyed after that. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Each CATServer relay has its own bounded queue and writer goroutine with a write deadline (`relay.go`), so a client that stops reading is disconnected instead of stalling `readLoop`. Query methods (`GetFreqA`, `GetFreqB`, `QuerySpeed`, `QueryMode`) share one response channel, so each holds `CATClient.queryMu` for its whole drain → send → await transaction. Lock order is always `Winkeyer.mu` → `CATClient.queryMu` → `CATClient.mu` to prevent deadlocks. Every WinKeyer stop path — `Close`, clear buffer, reset, host close — goes through `stopKeyingLocked` + `sendStop`: it aborts CW that may still be keying and drops PTT held by an RTTY bracket, a pending `]` release, or a tune carrier, sending under `sendMu`. `Close` does this before the CAT link is closed. Tune (key immediate) PTT is sent synchronously under `Winkeyer.mu`, so on and off reach the radio in order. After `Close`, `processByte` drops any byte `Run` still reads, so nothing keys the radio again. The keyer sends a status byte whenever XOFF sets or clears, not only when busy changes. A MIDI controller that disconnects (`deviceDisconnected`) releases a held PTT but, unlike `Close`, leaves the driver open for the reconnect. RadioServer tracks each connection from accept, including while the HTTP/CAT mux peeks at its first bytes, so `Close` disconnects clients that never sent anything.
 
 ### Serial Port Configuration
 

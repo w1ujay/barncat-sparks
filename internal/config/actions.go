@@ -21,8 +21,16 @@ var ActionRegistry = map[string]ActionDef{
 	"vfo_tune":   {Label: "VFO Tune", Options: []OptionDef{{Key: "step", Label: "Step (Hz)", Default: "10"}}},
 	"volume":     {Label: "Volume (Main)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
 	"volume_b":   {Label: "Volume (Sub)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
-	"rf_gain":    {Label: "RF Gain (Main)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
-	"rf_gain_b":  {Label: "RF Gain (Sub)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
+	"rf_gain":          {Label: "RF Gain (Main)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
+	"rf_gain_b":        {Label: "RF Gain (Sub)", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
+	"rf_gain_adjust":   {Label: "RF Gain Adjust (Main)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_b_adjust": {Label: "RF Gain Adjust (Sub)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_up":       {Label: "RF Gain Up (Main)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_down":     {Label: "RF Gain Down (Main)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_b_up":     {Label: "RF Gain Up (Sub)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_b_down":   {Label: "RF Gain Down (Sub)", Options: []OptionDef{{Key: "step", Label: "Step (dB)", Default: "1"}}},
+	"rf_gain_toggle":   {Label: "RF Gain Toggle (Main)"},
+	"rf_gain_b_toggle": {Label: "RF Gain Toggle (Sub)"},
 	"power":      {Label: "TX Power", Options: []OptionDef{{Key: "invert", Label: "Invert", Default: "0"}}},
 	"speed":      {Label: "Keyer Speed"},
 	"ptt":        {Label: "PTT"},
@@ -47,6 +55,8 @@ var ActionRegistry = map[string]ActionDef{
 	"notch":       {Label: "Manual Notch Toggle"},
 	"notch_freq":  {Label: "Manual Notch Freq", Options: []OptionDef{{Key: "min", Label: "Min (Hz)", Default: "550"}, {Key: "max", Label: "Max (Hz)", Default: "650"}}},
 	"cw_msg":      {Label: "CW Message", Options: []OptionDef{{Key: "text", Label: "Text", Default: "CQ CQ CQ"}}},
+	"dit_paddle":  {Label: "Dit Paddle (KZ)"},
+	"dah_paddle":  {Label: "Dah Paddle (KZ)"},
 }
 
 // ActionNames returns sorted action names for populating dropdowns.

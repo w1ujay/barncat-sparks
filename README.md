@@ -18,7 +18,7 @@ Both subsystems are optional and can run independently or together, sharing the 
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.27+
 - A virtual serial port pair (for WinKeyer mode):
   - **Windows:** [com0com](https://com0com.sourceforge.net/)
   - **Linux:** `socat`
@@ -147,6 +147,35 @@ Edit `midi-config.json` to map your controller's MIDI events to actions:
   ]
 }
 ```
+
+## Station (lempster-hearth)
+
+The Station section of the web UI shows the cabin K4's power state and its
+Starlink power-save status, and lets you power the K4 on/off and arm/disarm
+power-save. It talks to lempster-hearth running on the cabin's Pi, not to the
+K4 directly.
+
+### Settings
+
+| Field           | Description                                                              |
+|-----------------|---------------------------------------------------------------------------|
+| Hearth URL      | The cabin Pi's hearth API, reached over the tailnet, e.g. `http://<cabin-pi>:8123` |
+| Replica URL     | Optional hosted replica, used when the Pi is unreachable, e.g. `https://<replica-host>` |
+| Site            | Needed when the replica is a multi-site hub: the site name, e.g. `cabin`. Sent as `?site=` on status and power-save requests; a single-site Pi ignores it. |
+| Operator Token  | Issued by the site owner, scoped to `k4` and/or `powersave`. Press Test to see the token's name and scopes. |
+
+### Access
+
+The operator needs tailnet access to the cabin Pi's hearth port and to the
+K4's CAT port; the site owner is responsible for exposing hearth on the
+tailnet and issuing tokens.
+
+### When the cabin is dark
+
+Power-save blacks out the cabin's Starlink link on a schedule. While it's
+down, status is read from the replica instead of the Pi, and a power-save
+change you make is queued there until the cabin's next check-in. K4 controls
+need the Pi directly and are unavailable during a blackout.
 
 ## Protocol Details
 

@@ -20,14 +20,16 @@ type midiEvent struct {
 	data2  byte
 }
 
-// MIDIDriver connects to a MIDI device and dispatches actions to the K4.
+// MIDIDriver connects to MIDI devices and dispatches actions to the K4.
 type MIDIDriver struct {
 	mu        sync.Mutex
 	closeOnce sync.Once
-	cat       *cat.CATClient
+	cat       cat.Radio
+	volumeCat cat.Radio // optional: route volume commands here (e.g. QK4)
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	pttOn     bool
+	closed    bool // set by Close under mu; PTT is never keyed after it
 	done      chan struct{}
 	events    chan midiEvent
 
@@ -48,10 +50,14 @@ type MIDIDriver struct {
 	notchOn  bool
 	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
 	filterBW int // current filter BW in Hz (0 = unknown, default 500)
+
+	// RF gain state (accessed only from event loop goroutine)
+	rfGain  int // main RX attenuation level (0-60, 0=full gain)
+	rfGainB int // sub RX attenuation level
 }
 
 // NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(c *cat.CATClient, config *MIDIConfig) *MIDIDriver {
+func NewMIDIDriver(c cat.Radio, config *MIDIConfig) *MIDIDriver {
 	return &MIDIDriver{
 		cat:    c,
 		config: config,
@@ -73,9 +79,10 @@ func (d *MIDIDriver) Run() error {
 	return fmt.Errorf("MIDI support requires Windows (winmm.dll)")
 }
 
-// Close shuts down the MIDI driver.
+// Close shuts down the MIDI driver, releasing a PTT that MIDI still holds.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
 		close(d.done)
+		d.releasePTT()
 	})
 }
