@@ -25,6 +25,7 @@ import (
 
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
+	"github.com/ujay/barncat-sparks/internal/controls"
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/midi"
 	"github.com/ujay/barncat-sparks/internal/webui"
@@ -236,7 +237,9 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 			log.Fatalf("Failed to load MIDI config %s: %v", midiConfigPath, err)
 		}
 		midiCfg.Devices = []string{midiDevice}
-		midiDrv := midi.NewMIDIDriver(c, midiCfg)
+		exec := controls.New(c, midiCfg.PaddleSwap)
+		defer exec.Close() // deferred first, so it runs after midiDrv.Close
+		midiDrv := midi.NewMIDIDriver(exec, midiCfg)
 		go func() {
 			if err := midiDrv.Run(); err != nil {
 				log.Fatalf("MIDI: %v", err)

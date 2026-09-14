@@ -16,6 +16,7 @@ import (
 
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
+	"github.com/ujay/barncat-sparks/internal/controls"
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
@@ -26,19 +27,20 @@ var webuiHTML embed.FS
 
 // WebUI holds the HTTP server and runtime state.
 type WebUI struct {
-	mu        sync.Mutex
-	config    *config.AppConfig
-	cfgPath   string
-	running   bool
-	statusMsg string
+	mu           sync.Mutex
+	config       *config.AppConfig
+	cfgPath      string
+	running      bool
+	statusMsg    string
 	cat          cat.Radio
-	qk4VolumeCat *cat.CATClient // optional QK4 connection for volume routing
+	qk4VolumeCat *cat.CATClient     // optional QK4 connection for volume routing
+	exec         *controls.Executor // runs actions for MIDI (and the knob)
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
-	catServer   *cat.CATServer
-	radioServer *cat.RadioServer
-	lp100       *lp100a.Driver
-	server    *http.Server
+	catServer    *cat.CATServer
+	radioServer  *cat.RadioServer
+	lp100        *lp100a.Driver
+	server       *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
 	decodeMu      sync.Mutex
@@ -307,8 +309,7 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 
 	// Start MIDI if any device selected
 	if len(w.config.GetMIDIDevices()) > 0 {
-		midiCfg := w.config.ToMIDIConfig()
-		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
+		w.exec = controls.New(w.cat, w.config.PaddleSwap)
 
 		// Route volume commands to QK4 if enabled
 		if w.config.QK4Volume {
@@ -321,11 +322,12 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				log.Printf("QK4 volume route: %v (volume will use main radio)", err)
 			} else {
 				w.qk4VolumeCat = qk4
-				w.midiDrv.SetVolumeCat(qk4)
+				w.exec.SetVolumeTarget(qk4)
 				log.Printf("QK4 volume route: connected to %s", addr)
 			}
 		}
 
+		w.midiDrv = midi.NewMIDIDriver(w.exec, w.config.ToMIDIConfig())
 		go func() {
 			if err := w.midiDrv.Run(); err != nil {
 				w.mu.Lock()
@@ -402,6 +404,11 @@ func (w *WebUI) stopLocked() {
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
 		w.midiDrv = nil
+	}
+	// After the inputs, before the QK4 link: releases a held PTT.
+	if w.exec != nil {
+		w.exec.Close()
+		w.exec = nil
 	}
 	if w.qk4VolumeCat != nil {
 		w.qk4VolumeCat.Close()

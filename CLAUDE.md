@@ -36,6 +36,8 @@ internal/
   keyer/                     # WinKeyer protocol engine
     winkeyer.go              # Byte-level state machine, CW buffer, sendLoop
     morse.go                 # Morse timing lookup (dit units per char)
+  controls/                  # Shared action executor for hands-on inputs
+    executor.go              # Event, Executor: action dispatch, VFO cache/throttle, PTT
   midi/                      # MIDI controller support
     midi.go                  # MIDIConfig, MIDIMapping, dispatch logic
     midi_windows.go          # MIDIDriver (Windows winmm.dll)
@@ -75,11 +77,12 @@ N1MM Logger ↔ TCP ↔ CATServer (cat/) ──→ CATClient ──→ serial �
 ### Dependency Graph (acyclic)
 
 ```
-cmd/barncat-sparks  →  webui, cat, keyer, midi, config
-webui               →  cat, keyer, midi, config, hearth
+cmd/barncat-sparks  →  webui, cat, keyer, midi, controls, config
+webui               →  cat, keyer, midi, controls, config, hearth
 config              →  midi  (for MIDIConfig/MIDIMapping in ToMIDIConfig)
 keyer               →  cat
-midi                →  cat
+midi                →  controls
+controls            →  cat
 cat                 →  (stdlib only)
 hearth              →  (stdlib only)
 ```
@@ -100,7 +103,7 @@ hearth              →  (stdlib only)
 
 ### Concurrency Model
 
-The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes; `sendMu` makes sendLoop's cancel check and its `KY` one step, and the abort paths (`Close`, clear buffer) take it before `SendAbort`, so a `KY` reaches the radio before the abort or not at all. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. The `MIDIDriver` event loop processes MIDI events synchronously (one at a time); VFO tuning caches the frequency locally and throttles CAT sends to ~20/sec. MIDI PTT is sent synchronously under `MIDIDriver.mu` so press and release reach the radio in order; `Close` marks the driver closed and releases a held PTT, and no PTT is keyed after that. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Each CATServer relay has its own bounded queue and writer goroutine with a write deadline (`relay.go`), so a client that stops reading is disconnected instead of stalling `readLoop`. Query methods (`GetFreqA`, `GetFreqB`, `QuerySpeed`, `QueryMode`) share one response channel, so each holds `CATClient.queryMu` for its whole drain → send → await transaction. Lock order is always `Winkeyer.mu` → `CATClient.queryMu` → `CATClient.mu` to prevent deadlocks. Every WinKeyer stop path — `Close`, clear buffer, reset, host close — goes through `stopKeyingLocked` + `sendStop`: it aborts CW that may still be keying and drops PTT held by an RTTY bracket, a pending `]` release, or a tune carrier, sending under `sendMu`. `Close` does this before the CAT link is closed. Tune (key immediate) PTT is sent synchronously under `Winkeyer.mu`, so on and off reach the radio in order. After `Close`, `processByte` drops any byte `Run` still reads, so nothing keys the radio again. The keyer sends a status byte whenever XOFF sets or clears, not only when busy changes. A MIDI controller that disconnects (`deviceDisconnected`) releases a held PTT but, unlike `Close`, leaves the driver open for the reconnect. RadioServer tracks each connection from accept, including while the HTTP/CAT mux peeks at its first bytes, so `Close` disconnects clients that never sent anything.
+The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes; `sendMu` makes sendLoop's cancel check and its `KY` one step, and the abort paths (`Close`, clear buffer) take it before `SendAbort`, so a `KY` reaches the radio before the abort or not at all. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. Hands-on inputs send `controls.Event`s to one `controls.Executor`; `Handle` is synchronous and holds `Executor.mu` for the whole event, so events from all inputs run one at a time in arrival order. VFO tuning caches the frequency and throttles CAT sends to ~20/sec. PTT is sent synchronously under `Executor.mu` so press and release reach the radio in order; `Executor.Close` marks it closed and releases a held PTT, and no PTT is keyed after that. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Each CATServer relay has its own bounded queue and writer goroutine with a write deadline (`relay.go`), so a client that stops reading is disconnected instead of stalling `readLoop`. Query methods (`GetFreqA`, `GetFreqB`, `QuerySpeed`, `QueryMode`) share one response channel, so each holds `CATClient.queryMu` for its whole drain → send → await transaction. Lock order is always `Winkeyer.mu` → `CATClient.queryMu` → `CATClient.mu` to prevent deadlocks. Every WinKeyer stop path — `Close`, clear buffer, reset, host close — goes through `stopKeyingLocked` + `sendStop`: it aborts CW that may still be keying and drops PTT held by an RTTY bracket, a pending `]` release, or a tune carrier, sending under `sendMu`. `Close` does this before the CAT link is closed. Tune (key immediate) PTT is sent synchronously under `Winkeyer.mu`, so on and off reach the radio in order. After `Close`, `processByte` drops any byte `Run` still reads, so nothing keys the radio again. The keyer sends a status byte whenever XOFF sets or clears, not only when busy changes. A MIDI controller that disconnects calls `Executor.DeviceLost`, which releases a held PTT but, unlike `Close`, leaves the executor open for the reconnect. Stop closes the inputs first, then the executor. RadioServer tracks each connection from accept, including while the HTTP/CAT mux peeks at its first bytes, so `Close` disconnects clients that never sent anything.
 
 ### Serial Port Configuration
 
