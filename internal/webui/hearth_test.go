@@ -288,6 +288,7 @@ func TestIndexWiresStation(t *testing.T) {
 		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
 		`id="operateView"`, `id="settingsView"`, `id="stationHint"`, `id="saveMsg"`, `showTab(`,
 		`id="laptopRows"`, `'/api/hearth/wol'`, `canUseHearth('wol')`,
+		`lastHearthKey`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("webui.html missing %s", want)
