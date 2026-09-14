@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - WinKeyer clear buffer (N1MM Esc) now stops a tune carrier
 - WinKeyer reset and host close release everything still keying the radio — a pending RTTY PTT release, a tune carrier, and CW in progress
 - WinKeyer unpause restarts CW that was queued while paused
+- WinKeyer input read after Stop is ignored, so a pending tune (key immediate), CW or RTTY `[` can no longer key the radio after it was released
+- Unplugging a MIDI controller while its PTT pad is held releases PTT; the pads key the radio again once it reconnects
+- WinKeyer reports XOFF and XON as the buffer fills and drains, so N1MM pauses instead of overrunning the 64-character buffer
+- WinKeyer backspace removes the last unsent character instead of sending it anyway
+- RadioServer passes RTTY messages longer than 24 characters through intact instead of cutting them at 24
+- RadioServer Stop disconnects a client that connected but never sent anything while the amp proxy or LP-100A HTTP is enabled, instead of leaving its socket open
+- Headless mode (`-nogui`) runs with only `-cat-listen` or `-radio-listen` instead of printing usage and exiting
 
 ## [0.2.1] - 2026-02-26
 
