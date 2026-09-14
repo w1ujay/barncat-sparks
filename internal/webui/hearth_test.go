@@ -286,6 +286,7 @@ func TestIndexWiresStation(t *testing.T) {
 		`id="stationPanel"`, `id="hearthToken"`, `id="k4OnBtn"`, `id="psBtn"`,
 		`'/api/hearth/status'`, `'/api/hearth/test'`, `'/api/hearth/k4'`, `'/api/hearth/powersave'`,
 		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
+		`id="operateView"`, `id="settingsView"`, `id="stationHint"`, `id="saveMsg"`, `showTab(`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("webui.html missing %s", want)
@@ -293,5 +294,32 @@ func TestIndexWiresStation(t *testing.T) {
 	}
 	if strings.Contains(body, "innerHTML = hearth") {
 		t.Error("hearth-derived text must be rendered with textContent")
+	}
+}
+
+// TestIndexSplitsOperateAndSettings pins which view each control lives in:
+// day-to-day controls on Operate, every config field and Save on Settings.
+func TestIndexSplitsOperateAndSettings(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&WebUI{}).handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	operate := strings.Index(body, `id="operateView"`)
+	settings := strings.Index(body, `id="settingsView"`)
+	if operate < 0 || settings < 0 || operate > settings {
+		t.Fatalf("operateView at %d, settingsView at %d; want operateView first", operate, settings)
+	}
+	for _, id := range []string{`id="startBtn"`, `id="stopBtn"`, `id="statusBar"`, `id="stationPanel"`, `id="k4OnBtn"`, `id="psBtn"`, `id="stationMsg"`} {
+		if i := strings.Index(body, id); i < operate || i > settings {
+			t.Errorf("%s is not inside operateView", id)
+		}
+	}
+	for _, id := range []string{`id="catAddr"`, `id="serialPort"`, `id="hearthUrl"`, `id="hearthToken"`, `id="hearthIdentity"`, `id="midiDevicesContainer"`, `id="paddleSwap"`, `id="saveMsg"`, `id="aboutSection"`} {
+		if i := strings.Index(body, id); i < settings {
+			t.Errorf("%s is not inside settingsView", id)
+		}
+	}
+	if strings.Contains(body, `id="settingsView">`) {
+		t.Error("settingsView must start hidden so the page opens on Operate")
 	}
 }
