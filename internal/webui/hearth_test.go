@@ -148,10 +148,104 @@ func TestHearthPowerSaveRequiresArmed(t *testing.T) {
 	}
 }
 
+func TestHearthWolNotConfigured(t *testing.T) {
+	w := hearthWebUI(&config.AppConfig{})
+	_, out := callJSON(t, w.handleHearthWol, http.MethodGet, "")
+	msg, _ := out["error"].(string)
+	if !strings.Contains(msg, "hearth_url") {
+		t.Errorf("response = %v, want the not-configured error", out)
+	}
+	if _, has := out["targets"]; has {
+		t.Errorf("response = %v, want no targets on error", out)
+	}
+}
+
+func TestHearthWolListsTargets(t *testing.T) {
+	pi := fakeHearthServer(t, map[string]http.HandlerFunc{
+		"GET /api/wol": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"targets":[{"name":"shack-laptop"}]}`)
+		},
+		"GET /api/wol/shack-laptop/status": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"online":true,"source":"tailscale"}`)
+		},
+	})
+	w := hearthWebUI(&config.AppConfig{HearthURL: pi.URL})
+	_, out := callJSON(t, w.handleHearthWol, http.MethodGet, "")
+	targets, _ := out["targets"].([]any)
+	if len(targets) != 1 {
+		t.Fatalf("response = %v, want one target", out)
+	}
+	tg, _ := targets[0].(map[string]any)
+	if tg["name"] != "shack-laptop" || tg["online"] != true || tg["source"] != "tailscale" {
+		t.Errorf("target = %v", tg)
+	}
+}
+
+// No targets is an empty array, never null, so the page can always iterate.
+func TestHearthWolEmptyTargetsIsArray(t *testing.T) {
+	pi := fakeHearthServer(t, map[string]http.HandlerFunc{
+		"GET /api/wol": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"targets":[]}`)
+		},
+	})
+	w := hearthWebUI(&config.AppConfig{HearthURL: pi.URL})
+	_, out := callJSON(t, w.handleHearthWol, http.MethodGet, "")
+	if targets, ok := out["targets"].([]any); !ok || len(targets) != 0 {
+		t.Errorf("response = %v, want targets: []", out)
+	}
+}
+
+func TestHearthWolWakePassesForbiddenThrough(t *testing.T) {
+	pi := fakeHearthServer(t, map[string]http.HandlerFunc{
+		"POST /api/wol/shack-laptop": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `operator sparks-test lacks scope "wol"`, http.StatusForbidden)
+		},
+	})
+	w := hearthWebUI(&config.AppConfig{HearthURL: pi.URL})
+	_, out := callJSON(t, w.handleHearthWol, http.MethodPost, `{"name":"shack-laptop"}`)
+	if out["status"] != float64(403) || out["ok"] == true ||
+		out["error"] != `not permitted: operator sparks-test lacks scope "wol"` {
+		t.Errorf("response = %v", out)
+	}
+}
+
+func TestHearthWolWakeOK(t *testing.T) {
+	pi := fakeHearthServer(t, map[string]http.HandlerFunc{
+		"POST /api/wol/shack-laptop": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"sent":true,"name":"shack-laptop"}`)
+		},
+	})
+	w := hearthWebUI(&config.AppConfig{HearthURL: pi.URL})
+	_, out := callJSON(t, w.handleHearthWol, http.MethodPost, `{"name":"shack-laptop"}`)
+	if out["ok"] != true {
+		t.Errorf("response = %v, want ok", out)
+	}
+}
+
+func TestHearthWolWakeRequiresName(t *testing.T) {
+	w := hearthWebUI(&config.AppConfig{HearthURL: "http://127.0.0.1:1"})
+	code, _ := callJSON(t, w.handleHearthWol, http.MethodPost, `{}`)
+	if code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", code)
+	}
+}
+
+func TestHearthWolRejectsOtherMethods(t *testing.T) {
+	w := hearthWebUI(&config.AppConfig{HearthURL: "http://127.0.0.1:1"})
+	code, _ := callJSON(t, w.handleHearthWol, http.MethodPut, "")
+	if code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", code)
+	}
+}
+
 // TestHearthPostRoutesRejectNonJSONContentType guards against a cross-site
 // "simple" request: any page in the operator's browser can POST
 // text/plain (no CORS preflight) and have it land as if it were JSON. The
-// three hearth POST handlers must reject a non-application/json body before
+// hearth POST handlers must reject a non-application/json body before
 // decoding it or contacting hearth at all.
 func TestHearthPostRoutesRejectNonJSONContentType(t *testing.T) {
 	dead := "http://" + freeAddr(t)
@@ -164,6 +258,7 @@ func TestHearthPostRoutesRejectNonJSONContentType(t *testing.T) {
 		{"test", w.handleHearthTest, `{"url":"` + dead + `"}`},
 		{"k4", w.handleHearthK4, `{"power":"on"}`},
 		{"powersave", w.handleHearthPowerSave, `{"armed":true}`},
+		{"wol", w.handleHearthWol, `{"name":"shack-laptop"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

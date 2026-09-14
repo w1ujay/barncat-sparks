@@ -145,3 +145,41 @@ func (w *WebUI) handleHearthPowerSave(rw http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(rw, hearthResult{OK: true, Queued: queued})
 }
+
+// handleHearthWol lists wake-on-LAN targets with their status (GET) or wakes
+// one (POST {"name"}). Both talk to the Pi only. Works while stopped.
+func (w *WebUI) handleHearthWol(rw http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		targets, err := w.hearthClient().WolTargets(r.Context())
+		if err != nil {
+			writeJSON(rw, hearthFailure(err))
+			return
+		}
+		writeJSON(rw, struct {
+			Targets []hearth.WolTarget `json:"targets"`
+		}{targets})
+	case http.MethodPost:
+		if !requireJSONContentType(rw, r) {
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
+			http.Error(rw, `body must set "name"`, http.StatusBadRequest)
+			return
+		}
+		if err := w.hearthClient().Wake(r.Context(), req.Name); err != nil {
+			writeJSON(rw, hearthFailure(err))
+			return
+		}
+		writeJSON(rw, hearthResult{OK: true})
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
