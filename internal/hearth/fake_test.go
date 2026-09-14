@@ -83,6 +83,23 @@ func errorReply(status int, msg string) http.HandlerFunc {
 	}
 }
 
+// hijackReply hijacks the connection and closes it without writing a
+// response, simulating a transport-level failure (a dropped connection)
+// rather than an HTTP error status.
+func hijackReply() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}
+}
+
 // redirectReply answers with a 3xx and a Location header.
 func redirectReply(status int, location string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {

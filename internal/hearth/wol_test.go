@@ -82,6 +82,25 @@ func TestWolTargetsFailedStatusIsUnknown(t *testing.T) {
 	}
 }
 
+// A status call that fails at the transport level (a dropped connection, not
+// merely an HTTP error status) also leaves that target unknown, and the call
+// as a whole still succeeds — same contract as the 404/500 cases above.
+func TestWolTargetsTransportFailureStatusIsUnknown(t *testing.T) {
+	pi := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/wol":                   jsonReply(`{"targets":[{"name":"broken-box"},{"name":"good-box"}]}`),
+		"GET /api/wol/broken-box/status": hijackReply(),
+		"GET /api/wol/good-box/status":   jsonReply(`{"online":true,"source":"ping"}`),
+	})
+	got, err := (&Client{PiURL: pi.URL}).WolTargets(context.Background())
+	if err != nil {
+		t.Fatalf("WolTargets: %v", err)
+	}
+	want := []string{"broken-box nil none", "good-box true ping"}
+	if d := describeTargets(got); !reflect.DeepEqual(d, want) {
+		t.Errorf("targets = %q, want %q", d, want)
+	}
+}
+
 func TestWolTargetsListErrorIsReturned(t *testing.T) {
 	pi := newFakeHearth(t, map[string]http.HandlerFunc{
 		"GET /api/wol": errorReply(http.StatusUnauthorized, "unauthorized"),
