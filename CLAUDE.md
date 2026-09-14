@@ -92,7 +92,7 @@ hearth              →  (stdlib only)
 
 - **`internal/cat/`** — Transport-agnostic CAT client. Connects to radios via TCP (`ConnectTCP`) or serial (`ConnectSerial`). Sends Elecraft CAT commands. Reads responses split on semicolons. CATServer accepts multiple TCP clients and relays commands to/from the radio.
 
-- **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte CW character buffer with XON/XOFF flow control. Includes Morse timing lookup for character echo pacing.
+- **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte ring buffer of CW characters (logical positions, slots reused once sendLoop takes them) with XON/XOFF flow control based on unsent characters. Includes Morse timing lookup for character echo pacing.
 
 - **`internal/midi/`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Maps MIDI events (CC, Note On/Off) to K4 actions. Windows driver uses `winmm.dll` syscalls; non-Windows builds use stubs.
 
