@@ -420,7 +420,13 @@ func (w *Winkeyer) execCommand() {
 		w.writeByte(0x80 | (potVal & 0x3F))
 
 	case 0x08: // Backspace
+		// Back up over the last character sendLoop hasn't taken. At the end of
+		// the buffer that removes it; after a pointer move it only moves the
+		// write position back, so the next character overwrites.
 		if w.writePos > w.readPos {
+			if w.writePos == w.bufLen {
+				w.bufLen--
+			}
 			w.writePos--
 			w.updateXoff()
 		}
