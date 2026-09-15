@@ -316,7 +316,7 @@ func TestIndexSplitsOperateAndSettings(t *testing.T) {
 			t.Errorf("%s is not inside operateView", id)
 		}
 	}
-	for _, id := range []string{`id="catAddr"`, `id="serialPort"`, `id="hearthUrl"`, `id="hearthToken"`, `id="hearthIdentity"`, `id="midiDevicesContainer"`, `id="paddleSwap"`, `id="saveMsg"`, `id="aboutSection"`} {
+	for _, id := range []string{`id="catAddr"`, `id="serialPort"`, `id="hearthUrl"`, `id="hearthToken"`, `id="hearthIdentity"`, `id="midiDevicesContainer"`, `id="qk4Volume"`, `id="saveMsg"`, `id="aboutSection"`} {
 		if i := strings.Index(body, id); i < settings {
 			t.Errorf("%s is not inside settingsView", id)
 		}
