@@ -11,10 +11,9 @@ import (
 
 // MIDIConfig holds the MIDI controller configuration.
 type MIDIConfig struct {
-	Device     string        `json:"device"`            // legacy single device
-	Devices    []string      `json:"devices,omitempty"` // multi-device
-	Mappings   []MIDIMapping `json:"mappings"`
-	PaddleSwap bool          `json:"paddle_swap"` // swap dit/dah paddle input
+	Device   string        `json:"device"`            // legacy single device
+	Devices  []string      `json:"devices,omitempty"` // multi-device
+	Mappings []MIDIMapping `json:"mappings"`
 }
 
 // GetDevices returns the configured device names, merging legacy and new fields.
