@@ -74,8 +74,6 @@ func TestActionKinds(t *testing.T) {
 		{"filter_down", KindButton, false},
 		{"cw_msg", KindButton, false},
 		{"ptt", KindButton, true},
-		{"dit_paddle", KindButton, true},
-		{"dah_paddle", KindButton, true},
 		{"volume", KindAbsolute, false},
 		{"speed", KindAbsolute, false},
 		{"notch_freq", KindAbsolute, false},

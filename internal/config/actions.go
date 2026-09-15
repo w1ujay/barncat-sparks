@@ -22,7 +22,7 @@ type OptionDef struct {
 type ActionDef struct {
 	Label     string      // Human-readable name (e.g., "VFO Tune")
 	Kind      string      // KindAbsolute, KindRelative or KindButton
-	Momentary bool        // acts on press and release (PTT, paddles); needs a control that reports a hold
+	Momentary bool        // acts on press and release (PTT); needs a control that reports a hold
 	Options   []OptionDef // Action-specific options (empty if none)
 }
 
@@ -66,8 +66,6 @@ var ActionRegistry = map[string]ActionDef{
 	"notch":            {Label: "Manual Notch Toggle", Kind: KindButton},
 	"notch_freq":       {Label: "Manual Notch Freq", Kind: KindAbsolute, Options: []OptionDef{{Key: "min", Label: "Min (Hz)", Default: "550"}, {Key: "max", Label: "Max (Hz)", Default: "650"}}},
 	"cw_msg":           {Label: "CW Message", Kind: KindButton, Options: []OptionDef{{Key: "text", Label: "Text", Default: "CQ CQ CQ"}}},
-	"dit_paddle":       {Label: "Dit Paddle (KZ)", Kind: KindButton, Momentary: true},
-	"dah_paddle":       {Label: "Dah Paddle (KZ)", Kind: KindButton, Momentary: true},
 }
 
 // ActionNames returns sorted action names for populating dropdowns.

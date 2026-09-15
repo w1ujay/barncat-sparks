@@ -25,7 +25,6 @@ type AppConfig struct {
 	KeyerSpeed        int            `json:"keyer_speed"`
 	MIDIDevice        string         `json:"midi_device,omitempty"`
 	MIDIDevices       []string       `json:"midi_devices,omitempty"`
-	PaddleSwap        bool           `json:"paddle_swap"`
 	QK4Volume         bool           `json:"qk4_volume,omitempty"`
 	QK4Address        string         `json:"qk4_address,omitempty"`
 	HearthURL         string         `json:"hearth_url"`
@@ -104,8 +103,7 @@ func (c *AppConfig) GetMIDIDevices() []string {
 // MIDI driver. Knob rows are left out.
 func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
 	mc := &midi.MIDIConfig{
-		Devices:    c.GetMIDIDevices(),
-		PaddleSwap: c.PaddleSwap,
+		Devices: c.GetMIDIDevices(),
 	}
 	for _, m := range c.Mappings {
 		if m.Type == MappingTypeKnob {

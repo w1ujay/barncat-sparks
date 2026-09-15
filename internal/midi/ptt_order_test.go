@@ -52,7 +52,7 @@ const (
 )
 
 func newTestDriver(r cat.Radio) *MIDIDriver {
-	return NewMIDIDriver(controls.New(r, false), &MIDIConfig{Mappings: []MIDIMapping{
+	return NewMIDIDriver(controls.New(r), &MIDIConfig{Mappings: []MIDIMapping{
 		{Type: "note_on", Channel: 0, Number: pttNote, Action: "ptt"},
 		{Type: "cc", Channel: 0, Number: speedCC, Action: "speed"},
 	}})
