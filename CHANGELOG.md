@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
 ### Added
 - K4 direct authentication (SHA-384) — connect to K4 port 9205 without QK4 bridge, with TCP mode dropdown in web UI (Plain TCP / K4 Auth / K4 TLS-PSK disabled) and `-cat-password` CLI flag
 - LP-100A wattmeter serial driver (`internal/lp100a`) — polls power, SWR, impedance at 200ms intervals with peak SWR tracking (4s timeout)

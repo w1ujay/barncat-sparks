@@ -1,7 +1,7 @@
 package config
 
 // Version is set at build time via -ldflags "-X github.com/ujay/barncat-sparks/internal/config.Version=X.Y.Z"
-var Version = "0.2.1"
+var Version = "0.3.0"
 
 // Tagline is the project tribute displayed in the About section.
 var Tagline = "Born from the chaos of the NZ1U Barnstormers Contest Group and the spirit of " +
