@@ -227,6 +227,22 @@ func TestStopClearsNoteFromFailedKnobStart(t *testing.T) {
 	}
 }
 
+// TestTraceReachesRunningKnob: the Protocol Trace checkbox turns knob tracing
+// on and off while Started, including when no WinKeyer is running.
+func TestTraceReachesRunningKnob(t *testing.T) {
+	w := knobWebUI()
+	w.running = true
+	fk := &fakeKnob{state: hidknob.StateConnected}
+	w.knob = fk
+
+	if code, out := callJSON(t, w.handleTrace, http.MethodPost, `{"enabled":true}`); code != http.StatusOK || !fk.trace {
+		t.Fatalf("trace on = %d %v, knob trace %v; want 200 and knob tracing", code, out, fk.trace)
+	}
+	if code, out := callJSON(t, w.handleTrace, http.MethodPost, `{"enabled":false}`); code != http.StatusOK || fk.trace {
+		t.Fatalf("trace off = %d %v, knob trace %v; want 200 and knob not tracing", code, out, fk.trace)
+	}
+}
+
 // TestStatusFollowsKnobState: /api/status reads the knob's live state each
 // time, not a string frozen at Start.
 func TestStatusFollowsKnobState(t *testing.T) {
