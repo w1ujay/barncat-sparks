@@ -236,6 +236,71 @@ func TestLearnBusy(t *testing.T) {
 	}
 }
 
+// waitUntil polls cond until it is true or timeout elapses, returning whether
+// it became true. Unlike waitFor, it does not fail the test — callers use it
+// to count outcomes across many racy iterations.
+func waitUntil(cond func() bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return true
+}
+
+// TestLearnNeverLosesAGesture races a very short Learn timeout against a
+// report arriving at about the same moment, many times. Every report sent
+// must end up either returned by Learn or dispatched to the sink — never
+// both, and never neither.
+func TestLearnNeverLosesAGesture(t *testing.T) {
+	sink := &recordSink{}
+	k, ft := startConnected(t, sink)
+
+	const iterations = 300
+	var returned, dispatched int
+	for i := 0; i < iterations; i++ {
+		before := len(sink.snapshot())
+
+		type learnResult struct {
+			usage uint16
+			err   error
+		}
+		resultCh := make(chan learnResult, 1)
+		go func() {
+			// A very short timeout puts ctx.Done() and the report's arrival
+			// at handleReport within nanoseconds of each other, so the
+			// unlock-then-send window in handleReport actually gets raced.
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Microsecond)
+			defer cancel()
+			u, err := k.Learn(ctx)
+			resultCh <- learnResult{u, err}
+		}()
+
+		ft.reports <- []byte{0x03, 0xe2, 0x00}
+
+		r := <-resultCh
+		if r.err == nil {
+			if r.usage != 0xE2 {
+				t.Fatalf("iteration %d: Learn returned usage 0x%04X, want 0x00E2", i, r.usage)
+			}
+			returned++
+			continue
+		}
+		if waitUntil(func() bool { return len(sink.snapshot()) > before }, 200*time.Millisecond) {
+			dispatched++
+		}
+	}
+
+	if total := returned + dispatched; total != iterations {
+		t.Fatalf("returned=%d dispatched=%d total=%d, want %d (a report was lost)", returned, dispatched, total, iterations)
+	}
+	if got := len(sink.snapshot()); got != dispatched {
+		t.Fatalf("sink has %d events, want %d (== dispatched)", got, dispatched)
+	}
+}
+
 // TestKnobReportsStateAndRetries: a knob that isn't set up, then isn't
 // connected, then appears, reports each state and connects without a restart.
 func TestKnobReportsStateAndRetries(t *testing.T) {

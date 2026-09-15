@@ -117,15 +117,16 @@ func (k *Knob) Learn(ctx context.Context) (uint16, error) {
 	case <-ctx.Done():
 		k.mu.Lock()
 		if k.learner == ch {
+			// handleReport hasn't taken ch yet: claim it back before it can.
 			k.learner = nil
+			k.mu.Unlock()
+			return 0, ctx.Err()
 		}
+		// handleReport already took ch under k.mu and, since Task 4's fix
+		// round 1, sends to it before releasing k.mu — so the value is
+		// guaranteed to be waiting here already.
 		k.mu.Unlock()
-		select {
-		case u := <-ch: // arrived at the same moment
-			return u, nil
-		default:
-		}
-		return 0, ctx.Err()
+		return <-ch, nil
 	}
 }
 
@@ -206,7 +207,17 @@ func (k *Knob) handleReport(b []byte) {
 	var learner chan uint16
 	if ok {
 		learner = k.learner
-		k.learner = nil
+		if learner != nil {
+			// Send while still holding k.mu: ch has capacity 1 and is owned
+			// by exactly one Learn call, so this can never block. Sending
+			// before k.learner is cleared (and before unlocking) means Learn
+			// can rely on the mutex alone to know the value is in ch once it
+			// observes k.learner no longer pointing at its channel — closing
+			// the race where ctx expires between the old capture-then-unlock
+			// and the send.
+			learner <- usage
+			k.learner = nil
+		}
 	}
 	k.mu.Unlock()
 
@@ -217,7 +228,6 @@ func (k *Knob) handleReport(b []byte) {
 		return
 	}
 	if learner != nil {
-		learner <- usage // buffered; never blocks
 		return
 	}
 	if m, found := k.index[usage]; found {
