@@ -45,8 +45,10 @@ Press + Turn Right, Press + Turn Left (two steps per click), Long Press.
 |---|---|
 | no note | connected |
 | (not connected) | not plugged in; Sparks keeps retrying while Started |
-| (not set up — replace its driver with WinUSB using Zadig) | still on the Windows keyboard driver; run the setup above |
+| (not set up — replace its driver with WinUSB using Zadig) | still on the Windows keyboard driver, run the setup above — or another program (a second copy of Sparks, a test tool) already has the knob open |
 | (Windows only) | this platform can't read the knob |
+
+While Sparks is running, the status bar and the device list follow the knob's current state.
 
 ## Undo
 
