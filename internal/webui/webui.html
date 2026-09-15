@@ -269,7 +269,9 @@ let knobState = '';   // last /api/knob/status: connected, not_set_up, not_conne
 const pendingLearns = new Map(); // mapping row → AbortController of its waiting Learn
 let statusPoll = null;
 let sparksRunning = false;
-let hearthIdentity = null;  // last successful whoami
+let hearthIdentity = null;  // last successful whoami for the saved station; decides the station controls
+let hearthIdentityRes = null; // last whoami reply for the saved station (identity or {error})
+let savedHearth = null;       // {url, replica_url, token} the station was last started with
 let hearthStatus = null;    // last /api/hearth/status
 let hearthPoll = null;
 
@@ -828,19 +830,23 @@ function startHearth(url) {
   // Start/Save mid-wake is normal. Only restart the station (and reset wolWaking,
   // the timers, hearthGen, etc.) when one of its four settings actually
   // changed; otherwise this is a no-op and the in-flight wake keeps running.
-  const key = JSON.stringify([
-    url,
-    document.getElementById('hearthReplicaUrl').value.trim(),
-    document.getElementById('hearthToken').value,
-    document.getElementById('hearthSite').value.trim()
-  ]);
-  if (key === lastHearthKey) return;
+  const replicaUrl = document.getElementById('hearthReplicaUrl').value.trim();
+  const token = document.getElementById('hearthToken').value;
+  const key = JSON.stringify([url, replicaUrl, token, document.getElementById('hearthSite').value.trim()]);
+  if (key === lastHearthKey) {
+    // A Test of other settings may have replaced the identity line; show the
+    // saved station's identity again.
+    showIdentity(hearthIdentityRes);
+    return;
+  }
   lastHearthKey = key;
 
   if (hearthPoll) { clearInterval(hearthPoll); hearthPoll = null; }
   hearthGen++;
   hearthStatus = null;
   hearthIdentity = null;
+  hearthIdentityRes = null;
+  savedHearth = {url: url, replica_url: replicaUrl, token: token};
   wolTargets = [];
   wolFetchedAt = 0;
   wolWaking = {};
@@ -850,11 +856,7 @@ function startHearth(url) {
   document.getElementById('stationPanel').hidden = !url;
   document.getElementById('stationHint').hidden = !!url;
   if (!url) return;
-  fetchHearthIdentity({
-    url: url,
-    replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
-    token: document.getElementById('hearthToken').value
-  }).then(renderHearthControls);
+  fetchHearthIdentity().then(renderHearthControls);
   pollHearth();
   hearthPoll = setInterval(pollHearth, 10000);
   wolTimer = setInterval(wolTick, WOL_WAKE_POLL_MS);
@@ -879,36 +881,69 @@ async function testHearth() {
   const el = document.getElementById('hearthIdentity');
   el.className = 'station-note';
   el.textContent = 'Testing…';
-  await fetchHearthIdentity({
+  const tested = {
     url: document.getElementById('hearthUrl').value.trim(),
     replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
     token: document.getElementById('hearthToken').value
-  });
+  };
+  const gen = hearthGen;
+  const res = await whoami(tested);
+  if (gen !== hearthGen) return; // the station changed while this was in flight
+  // Only a Test of the saved settings speaks for the station. Any other Test
+  // just shows its result, so unsaved settings never change what the station
+  // controls allow.
+  if (sameHearth(tested, savedHearth)) {
+    hearthIdentityRes = res;
+    hearthIdentity = res.error ? null : res;
+  }
+  showIdentity(res);
   renderHearthControls();
 }
 
-async function fetchHearthIdentity(body) {
+// fetchHearthIdentity asks hearth who the saved station's token belongs to.
+// Its reply decides which station controls are enabled.
+async function fetchHearthIdentity() {
   const gen = hearthGen;
-  let res;
+  const res = await whoami(savedHearth);
+  if (gen !== hearthGen) return; // the station changed while this was in flight
+  hearthIdentityRes = res;
+  hearthIdentity = res.error ? null : res;
+  showIdentity(res);
+}
+
+// whoami posts hearth settings to /api/hearth/test and returns the identity,
+// or {error} when the check fails.
+async function whoami(body) {
   try {
     const resp = await fetch('/api/hearth/test', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     });
-    res = await resp.json();
+    return await resp.json();
   } catch (e) {
-    res = {error: e.message};
+    return {error: e.message};
   }
-  if (gen !== hearthGen) return; // the station changed while this was in flight
+}
+
+function sameHearth(a, b) {
+  return !!a && !!b && a.url === b.url && a.replica_url === b.replica_url && a.token === b.token;
+}
+
+// showIdentity writes a whoami reply to the identity line on Settings; null
+// blanks it.
+function showIdentity(res) {
   const el = document.getElementById('hearthIdentity');
+  if (!res) {
+    el.className = 'station-note';
+    el.textContent = '';
+    return;
+  }
   if (res.error) {
-    hearthIdentity = null;
     el.className = 'station-note error';
     el.textContent = '✗ ' + res.error;
     return;
   }
-  hearthIdentity = res;
   const who = res.owner ? 'owner' : res.name + ' · ' + (res.scopes || []).join(', ');
   el.className = 'station-note';
   el.textContent = '✓ ' + who + (res.replica ? ' (via replica)' : '');
@@ -1002,11 +1037,7 @@ function renderHearthStatus() {
   if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
     const gen = hearthGen;
     hearthIdentityFetchGen = gen;
-    fetchHearthIdentity({
-      url: document.getElementById('hearthUrl').value.trim(),
-      replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
-      token: document.getElementById('hearthToken').value
-    }).then(() => {
+    fetchHearthIdentity().then(() => {
       if (hearthIdentityFetchGen === gen) hearthIdentityFetchGen = null;
       renderHearthControls();
     });
