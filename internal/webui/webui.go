@@ -315,7 +315,7 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	// Start MIDI and the knob; both run actions on one executor.
 	midiOn := len(w.config.GetMIDIDevices()) > 0
 	if midiOn || w.config.KnobEnabled {
-		w.exec = controls.New(w.cat, w.config.PaddleSwap)
+		w.exec = controls.New(w.cat)
 
 		// Route volume commands to QK4 if enabled
 		if w.config.QK4Volume {

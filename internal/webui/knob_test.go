@@ -180,7 +180,7 @@ func TestStartKnobLockedStatusText(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withSeams(t, tt.fk, nil, nil)
 			w := &WebUI{config: &config.AppConfig{KnobEnabled: true, ProtocolTrace: true, Mappings: knobRows()}}
-			w.exec = controls.New(nil, false)
+			w.exec = controls.New(nil)
 
 			if got := w.startKnobLocked(); got != tt.want {
 				t.Errorf("status text = %q, want %q", got, tt.want)
@@ -298,7 +298,7 @@ func TestStopReleasesPTTAfterClosingInputs(t *testing.T) {
 
 	radio := &pttLogRadio{log: logEvent}
 	w := knobWebUI()
-	w.exec = controls.New(radio, false)
+	w.exec = controls.New(radio)
 	w.exec.Handle(controls.Event{Action: "ptt", Value: 127})
 	w.knob = &fakeKnob{onClose: func() { logEvent("knob closed") }}
 

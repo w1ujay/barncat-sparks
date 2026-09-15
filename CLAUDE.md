@@ -105,7 +105,7 @@ hearth              →  (stdlib only)
 
 - **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte ring buffer of CW characters (logical positions, slots reused once sendLoop takes them) with XON/XOFF flow control based on unsent characters. Includes Morse timing lookup for character echo pacing.
 
-- **`internal/controls/`** — The action executor shared by MIDI and the knob. Runs mapped actions (VFO tuning with a frequency cache and throttle, gains, filters, toggles, PTT, paddles) against the radio one event at a time.
+- **`internal/controls/`** — The action executor shared by MIDI and the knob. Runs mapped actions (VFO tuning with a frequency cache and throttle, gains, filters, toggles, PTT) against the radio one event at a time.
 
 - **`internal/midi/`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Maps MIDI events (CC, Note On/Off) to `controls.Event`s for the shared executor. Windows driver uses `winmm.dll` syscalls; non-Windows builds use stubs.
 
