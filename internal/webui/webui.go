@@ -35,6 +35,8 @@ type WebUI struct {
 	cat          cat.Radio
 	qk4VolumeCat *cat.CATClient     // optional QK4 connection for volume routing
 	exec         *controls.Executor // runs actions for MIDI (and the knob)
+	knob         knobRunner         // the USB knob reader while Started
+	knobLearnMu  sync.Mutex         // one Learn at a time
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
 	catServer    *cat.CATServer
@@ -75,6 +77,8 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
 	mux.HandleFunc("/api/control-names", w.handleControlNames)
+	mux.HandleFunc("/api/knob/status", w.handleKnobStatus)
+	mux.HandleFunc("/api/knob/learn", w.handleKnobLearn)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
@@ -307,8 +311,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start MIDI if any device selected
-	if len(w.config.GetMIDIDevices()) > 0 {
+	// Start MIDI and the knob; both run actions on one executor.
+	midiOn := len(w.config.GetMIDIDevices()) > 0
+	if midiOn || w.config.KnobEnabled {
 		w.exec = controls.New(w.cat, w.config.PaddleSwap)
 
 		// Route volume commands to QK4 if enabled
@@ -326,7 +331,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				log.Printf("QK4 volume route: connected to %s", addr)
 			}
 		}
-
+	}
+	if midiOn {
 		w.midiDrv = midi.NewMIDIDriver(w.exec, w.config.ToMIDIConfig())
 		go func() {
 			if err := w.midiDrv.Run(); err != nil {
@@ -335,6 +341,10 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				w.mu.Unlock()
 			}
 		}()
+	}
+	knobStatus := ""
+	if w.config.KnobEnabled {
+		knobStatus = w.startKnobLocked()
 	}
 
 	w.running = true
@@ -367,6 +377,7 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	if devs := w.config.GetMIDIDevices(); len(devs) > 0 {
 		status += fmt.Sprintf(", MIDI: %s", strings.Join(devs, ", "))
 	}
+	status += knobStatus
 	w.statusMsg = status
 
 	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg})
@@ -401,6 +412,10 @@ func (w *WebUI) stopLocked() {
 		w.cat.SetTextDecode(false)
 	}
 
+	if w.knob != nil {
+		w.knob.Close()
+		w.knob = nil
+	}
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
 		w.midiDrv = nil
@@ -499,7 +514,12 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebUI) handleControlNames(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, config.ControlMaps)
+	names := make(map[string]config.ControlMap, len(config.ControlMaps)+1)
+	for device, cmap := range config.ControlMaps {
+		names[device] = cmap
+	}
+	names["knob"] = config.KnobControlNames
+	writeJSON(rw, names)
 }
 
 func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
