@@ -29,10 +29,9 @@ type Event struct {
 // arrival order: PTT press and release reach the radio in order, and tuning
 // state is never touched concurrently.
 type Executor struct {
-	mu         sync.Mutex
-	cat        cat.Radio
-	volumeCat  cat.Radio // optional: route volume commands here (e.g. QK4)
-	paddleSwap bool
+	mu        sync.Mutex
+	cat       cat.Radio
+	volumeCat cat.Radio // optional: route volume commands here (e.g. QK4)
 
 	pttOn  bool
 	closed bool // set by Close; PTT is never keyed after it
@@ -60,10 +59,9 @@ type Executor struct {
 	rfGainB int // sub RX attenuation level
 }
 
-// New creates an executor for radio. paddleSwap swaps dit and dah for the
-// paddle actions.
-func New(radio cat.Radio, paddleSwap bool) *Executor {
-	return &Executor{cat: radio, paddleSwap: paddleSwap}
+// New creates an executor for radio.
+func New(radio cat.Radio) *Executor {
+	return &Executor{cat: radio}
 }
 
 // SetVolumeTarget sets an alternative Radio for volume commands. When set,
@@ -322,12 +320,6 @@ func (e *Executor) dispatch(ev Event) {
 		if s, ok := ev.Opts["text"].(string); ok && s != "" {
 			go e.cat.SendCWMessage(s)
 		}
-
-	case "dit_paddle":
-		go e.cat.SendCWElement(!e.paddleSwap)
-
-	case "dah_paddle":
-		go e.cat.SendCWElement(e.paddleSwap)
 
 	default:
 		log.Printf("controls: unknown action %q", ev.Action)

@@ -74,7 +74,7 @@ func wantPTT(t *testing.T, r *fakeRadio, want []bool) {
 // unkey the radio, never the reverse, or the radio is left transmitting.
 func TestPTTPressAndReleaseReachRadioInOrder(t *testing.T) {
 	r := &fakeRadio{txDelay: 30 * time.Millisecond}
-	e := New(r, false)
+	e := New(r)
 	e.Handle(pttPress)
 	e.Handle(pttRelease)
 	wantPTT(t, r, []bool{true, false})
@@ -83,7 +83,7 @@ func TestPTTPressAndReleaseReachRadioInOrder(t *testing.T) {
 // TestCloseReleasesHeldPTT: stopping while a PTT is held must unkey the radio.
 func TestCloseReleasesHeldPTT(t *testing.T) {
 	r := &fakeRadio{}
-	e := New(r, false)
+	e := New(r)
 	e.Handle(pttPress)
 	e.Close()
 	wantPTT(t, r, []bool{true, false})
@@ -93,7 +93,7 @@ func TestCloseReleasesHeldPTT(t *testing.T) {
 // not key the radio after Close released it.
 func TestPressAfterCloseDoesNotKey(t *testing.T) {
 	r := &fakeRadio{}
-	e := New(r, false)
+	e := New(r)
 	e.Close()
 	e.Handle(pttPress)
 	wantPTT(t, r, []bool{})
@@ -103,14 +103,14 @@ func TestPressAfterCloseDoesNotKey(t *testing.T) {
 // executor didn't start.
 func TestCloseWithoutPTTSendsNothing(t *testing.T) {
 	r := &fakeRadio{}
-	New(r, false).Close()
+	New(r).Close()
 	wantPTT(t, r, []bool{})
 }
 
 // TestCloseAfterReleaseSendsNothingMore: a released PTT isn't released twice.
 func TestCloseAfterReleaseSendsNothingMore(t *testing.T) {
 	r := &fakeRadio{}
-	e := New(r, false)
+	e := New(r)
 	e.Handle(pttPress)
 	e.Handle(pttRelease)
 	e.Close()
@@ -122,7 +122,7 @@ func TestCloseAfterReleaseSendsNothingMore(t *testing.T) {
 // unkey the radio, and PTT keys again once it's back.
 func TestDeviceLostReleasesHeldPTT(t *testing.T) {
 	r := &fakeRadio{}
-	e := New(r, false)
+	e := New(r)
 	e.Handle(pttPress)
 	e.DeviceLost("DJ2GO2")
 	e.Handle(pttPress) // pressed again after reconnecting
@@ -133,7 +133,7 @@ func TestDeviceLostReleasesHeldPTT(t *testing.T) {
 // transmission the executor didn't start.
 func TestDeviceLostWithoutPTTSendsNothing(t *testing.T) {
 	r := &fakeRadio{}
-	New(r, false).DeviceLost("DJ2GO2")
+	New(r).DeviceLost("DJ2GO2")
 	wantPTT(t, r, []bool{})
 }
 
@@ -142,7 +142,7 @@ func TestDeviceLostWithoutPTTSendsNothing(t *testing.T) {
 // throttle, so the radio is queried once and never flooded.
 func TestRelativeTuneSharesOneCache(t *testing.T) {
 	r := &fakeRadio{freqA: 14074000}
-	e := New(r, false)
+	e := New(r)
 	step := map[string]any{"step": float64(10)}
 
 	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})   // e.g. a DJ2GO2 jog: query, then 14074010

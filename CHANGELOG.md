@@ -11,9 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - LP-100A wattmeter serial driver (`internal/lp100a`) — polls power, SWR, impedance at 200ms intervals with peak SWR tracking (4s timeout)
 - LP-100A HTTP API on RadioServer port (`GET /api/lp100a`, `POST /api/lp100a/command`) — coexists with amp proxy and CAT on the same TCP connection
 - LP-100A serial port selector in web UI and `sparks-config.json` (`lp100_port`)
-- HaliKey MIDI paddle support — `dit_paddle` and `dah_paddle` actions send K4 `KZ` element commands
-- Paddle swap option (`paddle_swap`) in config and web UI to reverse dit/dah input
-- Multi-device MIDI support — configure multiple MIDI devices simultaneously (e.g., DJ2GO2 + HaliKey), all sharing the same mapping dispatch
+- Multi-device MIDI support — configure multiple MIDI devices simultaneously, all sharing the same mapping dispatch
 - RF-Kit amplifier HTTP proxy on RadioServer port — multiplexes HTTP and CAT on the same TCP connection by peeking at the first bytes of each connection
 - Amplifier URL configuration field in web UI and `sparks-config.json` (`amp_url`)
 - DJ2GO2 MIDI control name registry (`internal/config/controls.go`) — maps MIDI type/channel/number to physical control names (Jog Wheel, Play, Hot Cue, etc.)
