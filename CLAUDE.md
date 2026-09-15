@@ -36,8 +36,10 @@ internal/
   keyer/                     # WinKeyer protocol engine
     winkeyer.go              # Byte-level state machine, CW buffer, sendLoop
     morse.go                 # Morse timing lookup (dit units per char)
+  controls/                  # Shared action executor for hands-on inputs
+    executor.go              # Event, Executor: action dispatch, VFO cache/throttle, PTT
   midi/                      # MIDI controller support
-    midi.go                  # MIDIConfig, MIDIMapping, dispatch logic
+    midi.go                  # MIDIConfig, MIDIMapping, MIDI message → controls.Event
     midi_windows.go          # MIDIDriver (Windows winmm.dll)
     midi_other.go            # MIDIDriver (stub for non-Windows)
     midi_list_windows.go     # EnumerateMIDIDevices (Windows)
@@ -50,9 +52,15 @@ internal/
     client.go                # Client, errors, Pi→replica fallback, WhoAmI
     status.go                # Status (K4 + power-save), replica merge
     control.go               # K4Power, SetPowerSave
+  hidknob/                   # DROK/iWit USB knob input over WinUSB
+    hidknob.go               # Mapping, State, errors, DecodeReport, event translation
+    knob.go                  # Knob reader loop, Learn, Probe, LearnOnce
+    transport_windows.go     # WinUSB open/read (setupapi, winusb.dll)
+    transport_other.go       # stub: unsupported
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
     hearth.go                # /api/hearth/* — hearth status + K4/power-save controls
+    knob.go                  # /api/knob/* — knob status and Learn; knob start in Start
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)
     gui_other.go             # waitForGUI (app-mode browser)
@@ -67,19 +75,22 @@ BarnCat Sparks is a **WinKeyer3 emulator and MIDI controller for the Elecraft K4
 
 ```
 N1MM Logger ↔ virtual serial port ↔ Winkeyer (keyer/) ↔ CATClient (cat/) ↔ K4 radio (TCP or serial)
-MIDI controller (USB) ↔ MIDIDriver (midi/) ─────────────↗
-Browser ↔ WebUI (webui/) ─── config/control ─────────────↗
+MIDI controller (USB) ↔ MIDIDriver (midi/) ──→ Executor (controls/) ──↗
+USB knob (WinUSB) ↔ Knob (hidknob/) ──────────→ Executor (controls/) ──↗
+Browser ↔ WebUI (webui/) ─── config/control ─────────────────────────↗
 N1MM Logger ↔ TCP ↔ CATServer (cat/) ──→ CATClient ──→ serial ──→ K3/K4 radio
 ```
 
 ### Dependency Graph (acyclic)
 
 ```
-cmd/barncat-sparks  →  webui, cat, keyer, midi, config
-webui               →  cat, keyer, midi, config, hearth
-config              →  midi  (for MIDIConfig/MIDIMapping in ToMIDIConfig)
+cmd/barncat-sparks  →  webui, cat, keyer, midi, controls, config
+webui               →  cat, keyer, midi, controls, hidknob, config, hearth
+config              →  midi, hidknob  (ToMIDIConfig, ToKnobMappings)
 keyer               →  cat
-midi                →  cat
+midi                →  controls
+controls            →  cat
+hidknob             →  controls
 cat                 →  (stdlib only)
 hearth              →  (stdlib only)
 ```
@@ -94,13 +105,17 @@ hearth              →  (stdlib only)
 
 - **`internal/keyer/`** — Core WinKeyer protocol engine. Implements a byte-level state machine that parses the WinKeyer binary protocol. Manages a 64-byte ring buffer of CW characters (logical positions, slots reused once sendLoop takes them) with XON/XOFF flow control based on unsent characters. Includes Morse timing lookup for character echo pacing.
 
-- **`internal/midi/`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Maps MIDI events (CC, Note On/Off) to K4 actions. Windows driver uses `winmm.dll` syscalls; non-Windows builds use stubs.
+- **`internal/controls/`** — The action executor shared by MIDI and the knob. Runs mapped actions (VFO tuning with a frequency cache and throttle, gains, filters, toggles, PTT, paddles) against the radio one event at a time.
+
+- **`internal/midi/`** — Cross-platform MIDI config types, mapping index, and dispatch logic. Maps MIDI events (CC, Note On/Off) to `controls.Event`s for the shared executor. Windows driver uses `winmm.dll` syscalls; non-Windows builds use stubs.
+
+- **`internal/hidknob/`** — The USB knob as an input. Reads the knob's HID reports over WinUSB (after a one-time Zadig driver swap), decodes consumer-control report 3, and hands mapped usages to the `controls.Executor`. Mappings come from `type: "knob"` rows; Learn captures the next usage for the Settings page.
 
 - **`internal/config/`** — `AppConfig` struct, load/save to `sparks-config.json`, serial port enumeration, action registry for MIDI mappings, and version/about info.
 
 ### Concurrency Model
 
-The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes; `sendMu` makes sendLoop's cancel check and its `KY` one step, and the abort paths (`Close`, clear buffer) take it before `SendAbort`, so a `KY` reaches the radio before the abort or not at all. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. The `MIDIDriver` event loop processes MIDI events synchronously (one at a time); VFO tuning caches the frequency locally and throttles CAT sends to ~20/sec. MIDI PTT is sent synchronously under `MIDIDriver.mu` so press and release reach the radio in order; `Close` marks the driver closed and releases a held PTT, and no PTT is keyed after that. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Each CATServer relay has its own bounded queue and writer goroutine with a write deadline (`relay.go`), so a client that stops reading is disconnected instead of stalling `readLoop`. Query methods (`GetFreqA`, `GetFreqB`, `QuerySpeed`, `QueryMode`) share one response channel, so each holds `CATClient.queryMu` for its whole drain → send → await transaction. Lock order is always `Winkeyer.mu` → `CATClient.queryMu` → `CATClient.mu` to prevent deadlocks. Every WinKeyer stop path — `Close`, clear buffer, reset, host close — goes through `stopKeyingLocked` + `sendStop`: it aborts CW that may still be keying and drops PTT held by an RTTY bracket, a pending `]` release, or a tune carrier, sending under `sendMu`. `Close` does this before the CAT link is closed. Tune (key immediate) PTT is sent synchronously under `Winkeyer.mu`, so on and off reach the radio in order. After `Close`, `processByte` drops any byte `Run` still reads, so nothing keys the radio again. The keyer sends a status byte whenever XOFF sets or clears, not only when busy changes. A MIDI controller that disconnects (`deviceDisconnected`) releases a held PTT but, unlike `Close`, leaves the driver open for the reconnect. RadioServer tracks each connection from accept, including while the HTTP/CAT mux peeks at its first bytes, so `Close` disconnects clients that never sent anything.
+The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW buffer; `writeMu` guards serial port writes; `sendMu` makes sendLoop's cancel check and its `KY` one step, and the abort paths (`Close`, clear buffer) take it before `SendAbort`, so a `KY` reaches the radio before the abort or not at all. Each `sendLoop` goroutine receives its own `done` (completion) and `cancel` (abort) channels — `clearBuffer` closes `cancel` to stop the active sendLoop without racing on shared channel state. Hands-on inputs send `controls.Event`s to one `controls.Executor`; `Handle` is synchronous and holds `Executor.mu` for the whole event, so events from all inputs run one at a time in arrival order. VFO tuning caches the frequency and throttles CAT sends to ~20/sec. PTT is sent synchronously under `Executor.mu` so press and release reach the radio in order; `Executor.Close` marks it closed and releases a held PTT, and no PTT is keyed after that. The `CATClient.Send()` method is mutex-protected, allowing concurrent calls from both subsystems. Each CATServer relay has its own bounded queue and writer goroutine with a write deadline (`relay.go`), so a client that stops reading is disconnected instead of stalling `readLoop`. Query methods (`GetFreqA`, `GetFreqB`, `QuerySpeed`, `QueryMode`) share one response channel, so each holds `CATClient.queryMu` for its whole drain → send → await transaction. Lock order is always `Winkeyer.mu` → `CATClient.queryMu` → `CATClient.mu` to prevent deadlocks. Every WinKeyer stop path — `Close`, clear buffer, reset, host close — goes through `stopKeyingLocked` + `sendStop`: it aborts CW that may still be keying and drops PTT held by an RTTY bracket, a pending `]` release, or a tune carrier, sending under `sendMu`. `Close` does this before the CAT link is closed. Tune (key immediate) PTT is sent synchronously under `Winkeyer.mu`, so on and off reach the radio in order. After `Close`, `processByte` drops any byte `Run` still reads, so nothing keys the radio again. The keyer sends a status byte whenever XOFF sets or clears, not only when busy changes. A MIDI controller that disconnects calls `Executor.DeviceLost`, which releases a held PTT but, unlike `Close`, leaves the executor open for the reconnect. Stop closes the inputs first, then the executor. RadioServer tracks each connection from accept, including while the HTTP/CAT mux peeks at its first bytes, so `Close` disconnects clients that never sent anything. The knob reader goroutine (`hidknob.Knob`) owns the WinUSB handle: reads use a 250 ms pipe timeout so `Close` returns promptly, a missing or not-set-up knob is retried every 2 s, each report is handed to the executor synchronously, and a waiting `Learn` takes the next usage through a one-shot channel instead of dispatching it. Stop closes the knob first, then MIDI, then the executor. An action that waits on the radio holds `Executor.mu` and so stalls both inputs — for example, a VFO tuning step with a cold cache blocks in `GetFreqA` for up to the CAT query's 500 ms timeout (`internal/cat/catclient.go`), while the MIDI callback keeps accepting events into its 64-slot channel and silently drops them once it's full (`internal/midi/midi_windows.go`) rather than blocking itself.
 
 ### Serial Port Configuration
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
+	"github.com/ujay/barncat-sparks/internal/controls"
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
@@ -26,19 +27,23 @@ var webuiHTML embed.FS
 
 // WebUI holds the HTTP server and runtime state.
 type WebUI struct {
-	mu        sync.Mutex
-	config    *config.AppConfig
-	cfgPath   string
-	running   bool
-	statusMsg string
+	mu           sync.Mutex
+	config       *config.AppConfig
+	cfgPath      string
+	running      bool
+	statusMsg    string
 	cat          cat.Radio
-	qk4VolumeCat *cat.CATClient // optional QK4 connection for volume routing
+	qk4VolumeCat *cat.CATClient     // optional QK4 connection for volume routing
+	exec         *controls.Executor // runs actions for MIDI (and the knob)
+	knob         knobRunner         // the USB knob reader while Started
+	knobNote     string             // status text after the knob's live state: a start failure and ignored rows
+	knobLearnMu  sync.Mutex         // one Learn at a time
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
-	catServer   *cat.CATServer
-	radioServer *cat.RadioServer
-	lp100       *lp100a.Driver
-	server    *http.Server
+	catServer    *cat.CATServer
+	radioServer  *cat.RadioServer
+	lp100        *lp100a.Driver
+	server       *http.Server
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
 	decodeMu      sync.Mutex
@@ -73,6 +78,8 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/midi-devices", w.handleMIDIDevices)
 	mux.HandleFunc("/api/actions", w.handleActions)
 	mux.HandleFunc("/api/control-names", w.handleControlNames)
+	mux.HandleFunc("/api/knob/status", w.handleKnobStatus)
+	mux.HandleFunc("/api/knob/learn", w.handleKnobLearn)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
@@ -172,7 +179,7 @@ type statusResponse struct {
 
 func (w *WebUI) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
-	resp := statusResponse{Running: w.running, Message: w.statusMsg}
+	resp := statusResponse{Running: w.running, Message: w.statusMsg + w.knobStatusLocked()}
 	if w.wk != nil {
 		resp.RTTYMode = w.wk.IsRTTY()
 	}
@@ -305,10 +312,10 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start MIDI if any device selected
-	if len(w.config.GetMIDIDevices()) > 0 {
-		midiCfg := w.config.ToMIDIConfig()
-		w.midiDrv = midi.NewMIDIDriver(w.cat, midiCfg)
+	// Start MIDI and the knob; both run actions on one executor.
+	midiOn := len(w.config.GetMIDIDevices()) > 0
+	if midiOn || w.config.KnobEnabled {
+		w.exec = controls.New(w.cat, w.config.PaddleSwap)
 
 		// Route volume commands to QK4 if enabled
 		if w.config.QK4Volume {
@@ -321,11 +328,13 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				log.Printf("QK4 volume route: %v (volume will use main radio)", err)
 			} else {
 				w.qk4VolumeCat = qk4
-				w.midiDrv.SetVolumeCat(qk4)
+				w.exec.SetVolumeTarget(qk4)
 				log.Printf("QK4 volume route: connected to %s", addr)
 			}
 		}
-
+	}
+	if midiOn {
+		w.midiDrv = midi.NewMIDIDriver(w.exec, w.config.ToMIDIConfig())
 		go func() {
 			if err := w.midiDrv.Run(); err != nil {
 				w.mu.Lock()
@@ -333,6 +342,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 				w.mu.Unlock()
 			}
 		}()
+	}
+	if w.config.KnobEnabled {
+		w.startKnobLocked()
 	}
 
 	w.running = true
@@ -367,7 +379,7 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.statusMsg = status
 
-	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg})
+	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg + w.knobStatusLocked()})
 }
 
 func (w *WebUI) handleStop(rw http.ResponseWriter, r *http.Request) {
@@ -399,9 +411,19 @@ func (w *WebUI) stopLocked() {
 		w.cat.SetTextDecode(false)
 	}
 
+	if w.knob != nil {
+		w.knob.Close()
+		w.knob = nil
+	}
+	w.knobNote = ""
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
 		w.midiDrv = nil
+	}
+	// After the inputs, before the QK4 link: releases a held PTT.
+	if w.exec != nil {
+		w.exec.Close()
+		w.exec = nil
 	}
 	if w.qk4VolumeCat != nil {
 		w.qk4VolumeCat.Close()
@@ -460,9 +482,11 @@ func (w *WebUI) handleMIDIDevices(rw http.ResponseWriter, r *http.Request) {
 
 // actionInfo is the JSON shape for a single action in /api/actions.
 type actionInfo struct {
-	Name    string       `json:"name"`
-	Label   string       `json:"label"`
-	Options []optionInfo `json:"options,omitempty"`
+	Name      string       `json:"name"`
+	Label     string       `json:"label"`
+	Kind      string       `json:"kind"`
+	Momentary bool         `json:"momentary"`
+	Options   []optionInfo `json:"options,omitempty"`
 }
 
 type optionInfo struct {
@@ -476,7 +500,7 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 	actions := make([]actionInfo, len(names))
 	for i, name := range names {
 		def := config.ActionRegistry[name]
-		a := actionInfo{Name: name, Label: def.Label}
+		a := actionInfo{Name: name, Label: def.Label, Kind: def.Kind, Momentary: def.Momentary}
 		for _, opt := range def.Options {
 			a.Options = append(a.Options, optionInfo{
 				Key:     opt.Key,
@@ -490,7 +514,12 @@ func (w *WebUI) handleActions(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebUI) handleControlNames(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, config.ControlMaps)
+	names := make(map[string]config.ControlMap, len(config.ControlMaps)+1)
+	for device, cmap := range config.ControlMaps {
+		names[device] = cmap
+	}
+	names["knob"] = config.KnobControlNames
+	writeJSON(rw, names)
 }
 
 func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
@@ -510,12 +539,17 @@ func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if !w.running || w.wk == nil {
+	if !w.running || (w.wk == nil && w.knob == nil) {
 		http.Error(rw, "not running", http.StatusBadRequest)
 		return
 	}
 
-	w.wk.SetTrace(req.Enabled)
+	if w.wk != nil {
+		w.wk.SetTrace(req.Enabled)
+	}
+	if w.knob != nil {
+		w.knob.SetTrace(req.Enabled)
+	}
 	writeJSON(rw, map[string]bool{"enabled": req.Enabled})
 }
 
@@ -604,6 +638,5 @@ func (w *WebUI) decodeLoop(ctx context.Context, c cat.Radio) {
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(v)
+	writeJSONCode(rw, http.StatusOK, v)
 }
