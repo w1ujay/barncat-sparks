@@ -214,6 +214,19 @@ func TestStopClosesKnob(t *testing.T) {
 	}
 }
 
+// TestStopClearsNoteFromFailedKnobStart: a knob that failed to start leaves
+// w.knob nil but a note; a later Start with the knob off must not show it.
+func TestStopClearsNoteFromFailedKnobStart(t *testing.T) {
+	w := knobWebUI()
+	w.knobNote = ", Knob: requires Windows"
+	w.mu.Lock()
+	w.stopLocked()
+	w.mu.Unlock()
+	if w.knobNote != "" {
+		t.Errorf("knobNote = %q after stop, want empty", w.knobNote)
+	}
+}
+
 // TestStatusFollowsKnobState: /api/status reads the knob's live state each
 // time, not a string frozen at Start.
 func TestStatusFollowsKnobState(t *testing.T) {
