@@ -62,6 +62,7 @@ details summary:hover{color:#569cd6}
 .mapping-body input[type="number"]{width:55px}
 .mapping-field{display:inline-flex;align-items:center;gap:3px}
 .mapping-field>label{font-size:0.8em;color:#888;white-space:nowrap;display:inline}
+.learn-msg{font-size:0.85em;color:#f48771}
 .midi-device-list label{display:block;padding:3px 0;font-size:0.9em;cursor:pointer}
 .midi-device-list input[type="checkbox"]{width:auto;margin-right:6px}
 .inline-row{display:flex;gap:6px}
@@ -234,6 +235,8 @@ let mappings = [];
 let midiDevices = [];
 let availableMIDIDevices = [];
 let controlMaps = {};
+let knobEnabled = false;
+let knobState = '';   // last /api/knob/status: connected, not_set_up, not_connected, unsupported
 let statusPoll = null;
 let sparksRunning = false;
 let hearthIdentity = null;  // last successful whoami
@@ -267,7 +270,9 @@ async function init() {
   populateSelect('lp100Port', ports, cfg.lp100_port, '(none)');
   availableMIDIDevices = devices;
   midiDevices = cfg.midi_devices || (cfg.midi_device ? [cfg.midi_device] : []);
+  knobEnabled = !!cfg.knob_enabled;
   renderMIDIDevices();
+  refreshKnobStatus();
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('catPassword').value = cfg.cat_password || '';
   document.getElementById('tcpMode').value = cfg.cat_password ? 'k4auth' : 'plain';
@@ -306,6 +311,17 @@ async function rescanMIDI() {
   const resp = await fetch('/api/midi-devices');
   availableMIDIDevices = await resp.json();
   renderMIDIDevices();
+  refreshKnobStatus();
+}
+
+async function refreshKnobStatus() {
+  try {
+    const resp = await fetch('/api/knob/status');
+    knobState = (await resp.json()).state || '';
+  } catch (e) {
+    knobState = '';
+  }
+  renderMIDIDevices();
 }
 
 function populateSelect(id, items, selected, placeholder) {
@@ -324,17 +340,24 @@ function renderMIDIDevices() {
   const container = document.getElementById('midiDevicesContainer');
   // Merge available + configured (in case a saved device isn't currently plugged in)
   const allDevices = [...new Set([...availableMIDIDevices, ...midiDevices.filter(d => d)])];
+  let html = '';
   if (allDevices.length === 0) {
-    container.innerHTML = '<div class="no-mappings">(no MIDI devices found — click "Rescan")</div>';
-    return;
+    html += '<div class="no-mappings">(no MIDI devices found — click "Rescan")</div>';
   }
-  let html = '<div class="midi-device-list">';
+  html += '<div class="midi-device-list">';
   for (const d of allDevices) {
     const checked = midiDevices.includes(d) ? ' checked' : '';
     const avail = availableMIDIDevices.includes(d);
     const suffix = avail ? '' : ' <span style="color:#666">(not connected)</span>';
     html += '<label><input type="checkbox" value="'+d+'"'+checked+' onchange="onMIDIDeviceToggle(this)"> '+d+suffix+'</label>';
   }
+  const knobSuffix = {
+    not_connected: ' <span style="color:#666">(not connected)</span>',
+    not_set_up: ' <span style="color:#d7ba7d">(not set up — replace its driver with WinUSB using Zadig)</span>',
+    unsupported: ' <span style="color:#666">(Windows only)</span>'
+  }[knobState] || '';
+  html += '<label><input type="checkbox" id="knobEnabled"' + (knobEnabled ? ' checked' : '') +
+    ' onchange="knobEnabled=this.checked"> iWit USB Controller (knob)' + knobSuffix + '</label>';
   html += '</div>';
   container.innerHTML = html;
 }
@@ -348,8 +371,16 @@ function onMIDIDeviceToggle(cb) {
 }
 
 function getControlName(type, channel, number) {
+  if (type === 'knob') {
+    const n = number || 0;
+    const names = controlMaps.knob || {};
+    const name = names['knob:' + (channel || 3) + ':' + n];
+    if (name) return name;
+    return n > 0 ? 'Code 0x' + n.toString(16).toUpperCase().padStart(2, '0') : 'Not learned yet';
+  }
   const key = (type || 'cc') + ':' + (channel || 0) + ':' + (number || 0);
   for (const [pattern, cmap] of Object.entries(controlMaps)) {
+    if (pattern === 'knob') continue;
     for (const dev of midiDevices) {
       if (dev.indexOf(pattern) !== -1) {
         if (cmap[key]) return cmap[key];
@@ -374,27 +405,43 @@ function renderMappings() {
     const label = act ? act.label : '(unassigned)';
     const ctrlName = getControlName(m.type, m.channel, m.number);
     const ctrlDisplay = ctrlName ? ' <span style="color:#888;font-weight:normal">— ' + ctrlName + '</span>' : '';
+    let body;
+    if (m.type === 'knob') {
+      body = actionSelect(i, m.action, 'knob') +
+        typeSelect(i, m.type) +
+        '<button class="secondary" id="learnBtn'+i+'" onclick="learnKnob('+i+')">Learn</button>' +
+        directionSelect(i, m) +
+        optsFields(i, m.action, m.opts) +
+        '<span class="learn-msg" id="learnMsg'+i+'"></span>';
+    } else {
+      body = actionSelect(i, m.action, m.type) +
+        typeSelect(i, m.type) +
+        '<span class="mapping-field"><label>Ch</label><input type="number" min="0" max="15" value="'+(m.channel||0)+'" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></span>' +
+        '<span class="mapping-field"><label>#</label><input type="number" min="0" max="127" value="'+(m.number||0)+'" onchange="mappings['+i+'].number=parseInt(this.value)||0"></span>' +
+        optsFields(i, m.action, m.opts);
+    }
     html += '<div class="mapping-card">' +
       '<div class="mapping-header">' +
         '<span class="mapping-label">' + (i+1) + '. ' + label + ctrlDisplay + '</span>' +
         '<button class="danger" onclick="removeMapping('+i+')" title="Remove">&times;</button>' +
       '</div>' +
-      '<div class="mapping-body">' +
-        actionSelect(i, m.action) +
-        typeSelect(i, m.type) +
-        '<span class="mapping-field"><label>Ch</label><input type="number" min="0" max="15" value="'+(m.channel||0)+'" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></span>' +
-        '<span class="mapping-field"><label>#</label><input type="number" min="0" max="127" value="'+(m.number||0)+'" onchange="mappings['+i+'].number=parseInt(this.value)||0"></span>' +
-        optsFields(i, m.action, m.opts) +
-      '</div>' +
+      '<div class="mapping-body">' + body + '</div>' +
     '</div>';
   }
   container.innerHTML = html;
 }
 
-function actionSelect(idx, selected) {
+// knobActions are the actions a knob gesture can run: step actions and
+// single-press buttons. Sliders and hold actions (PTT, paddles) need other controls.
+function knobActions() {
+  return actions.filter(a => a.kind === 'relative' || (a.kind === 'button' && !a.momentary));
+}
+
+function actionSelect(idx, selected, rowType) {
+  const list = rowType === 'knob' ? knobActions() : actions;
   let html = '<select onchange="onActionChange('+idx+',this.value)">';
   html += '<option value="">—</option>';
-  for (const a of actions) {
+  for (const a of list) {
     const sel = a.name === selected ? ' selected' : '';
     html += '<option value="'+a.name+'"'+sel+'>'+a.label+'</option>';
   }
@@ -403,14 +450,82 @@ function actionSelect(idx, selected) {
 }
 
 function typeSelect(idx, selected) {
-  const types = [['cc','CC'],['note_on','Note On']];
-  let html = '<select onchange="mappings['+idx+'].type=this.value">';
+  const types = [['cc','CC'],['note_on','Note On'],['knob','Knob']];
+  let html = '<select onchange="onTypeChange('+idx+',this.value)">';
   for (const [val,label] of types) {
     const sel = val === selected ? ' selected' : '';
     html += '<option value="'+val+'"'+sel+'>'+label+'</option>';
   }
   html += '</select>';
   return html;
+}
+
+function directionSelect(idx, m) {
+  const act = actions.find(a => a.name === m.action);
+  if (!act || act.kind !== 'relative') return '';
+  const dir = (m.opts && m.opts.direction === -1) ? -1 : 1;
+  return '<span class="mapping-field"><label>Direction</label>' +
+    '<select id="knobDir'+idx+'" onchange="setDirection('+idx+',this.value)">' +
+    '<option value="1"'+(dir === 1 ? ' selected' : '')+'>+</option>' +
+    '<option value="-1"'+(dir === -1 ? ' selected' : '')+'>−</option>' +
+    '</select></span>';
+}
+
+function setDirection(idx, value) {
+  if (!mappings[idx].opts) mappings[idx].opts = {};
+  mappings[idx].opts.direction = parseInt(value);
+}
+
+function onTypeChange(idx, type) {
+  const m = mappings[idx];
+  m.type = type;
+  if (type === 'knob') {
+    m.channel = 3;
+    m.number = 0;
+    const act = actions.find(a => a.name === m.action);
+    if (m.action && !knobActions().includes(act)) {
+      m.action = '';
+      m.opts = {};
+    } else if (act && act.kind === 'relative') {
+      if (!m.opts) m.opts = {};
+      if (m.opts.direction !== 1 && m.opts.direction !== -1) m.opts.direction = 1;
+    }
+  } else if (m.opts) {
+    delete m.opts.direction;
+  }
+  renderMappings();
+}
+
+async function learnKnob(idx) {
+  const btn = document.getElementById('learnBtn' + idx);
+  const msg = document.getElementById('learnMsg' + idx);
+  btn.disabled = true;
+  btn.textContent = 'Move the knob…';
+  msg.textContent = '';
+  try {
+    const resp = await fetch('/api/knob/learn', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}'
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      msg.textContent = data.error || ('Learn failed (' + resp.status + ')');
+      return;
+    }
+    mappings[idx].type = 'knob';
+    mappings[idx].channel = 3;
+    mappings[idx].number = data.usage;
+    renderMappings();
+  } catch (e) {
+    msg.textContent = 'Learn failed: ' + e.message;
+  } finally {
+    const b = document.getElementById('learnBtn' + idx);
+    if (b) {
+      b.disabled = false;
+      b.textContent = 'Learn';
+    }
+  }
 }
 
 function optsFields(idx, actionName, opts) {
@@ -441,6 +556,9 @@ function onActionChange(idx, actionName) {
       const num = parseFloat(o.default);
       mappings[idx].opts[o.key] = isNaN(num) ? o.default : num;
     }
+  }
+  if (mappings[idx].type === 'knob' && act && act.kind === 'relative') {
+    mappings[idx].opts.direction = 1;
   }
   renderMappings();
 }
@@ -511,6 +629,7 @@ function gatherConfig() {
     lp100_port: document.getElementById('lp100Port').value,
     keyer_speed: parseInt(document.getElementById('keyerSpeed').value) || 25,
     midi_devices: midiDevices.filter(d => d !== ''),
+    knob_enabled: knobEnabled,
     paddle_swap: document.getElementById('paddleSwap').checked,
     qk4_volume: document.getElementById('qk4Volume').checked,
     qk4_address: document.getElementById('qk4Address').value,
