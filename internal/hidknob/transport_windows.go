@@ -125,7 +125,12 @@ func openDevice() (transport, State, error) {
 		return nil, StateNotSetUp, ErrNotSetUp
 	}
 	timeout := uint32(readTimeoutMillis)
-	procWinUsbSetPipePolicy.Call(wu, uintptr(pipe), pipeTransferTimeout, unsafe.Sizeof(timeout), uintptr(unsafe.Pointer(&timeout)))
+	if ok, _, _ := procWinUsbSetPipePolicy.Call(wu, uintptr(pipe), pipeTransferTimeout, unsafe.Sizeof(timeout), uintptr(unsafe.Pointer(&timeout))); ok == 0 {
+		log.Printf("knob: WinUsb_SetPipePolicy failed")
+		procWinUsbFree.Call(wu)
+		syscall.CloseHandle(h)
+		return nil, StateNotSetUp, ErrNotSetUp
+	}
 	return &winusbTransport{handle: h, wu: wu, pipe: pipe}, StateConnected, nil
 }
 
