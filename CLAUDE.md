@@ -52,6 +52,7 @@ internal/
     client.go                # Client, errors, Pi→replica fallback, WhoAmI
     status.go                # Status (K4 + power-save), replica merge
     control.go               # K4Power, SetPowerSave
+    wol.go                   # WolTargets, Wake (Pi-only wake-on-LAN)
   hidknob/                   # DROK/iWit USB knob input over WinUSB
     hidknob.go               # Mapping, State, errors, DecodeReport, event translation
     knob.go                  # Knob reader loop, Learn, Probe, LearnOnce
@@ -59,7 +60,7 @@ internal/
     transport_other.go       # stub: unsupported
   webui/                     # Web UI (HTTP server + embedded HTML)
     webui.go                 # HTTP handlers, REST API
-    hearth.go                # /api/hearth/* — hearth status + K4/power-save controls
+    hearth.go                # /api/hearth/* — hearth status + K4/power-save/WoL controls
     knob.go                  # /api/knob/* — knob status and Learn; knob start in Start
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)

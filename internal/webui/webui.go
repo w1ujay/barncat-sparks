@@ -88,6 +88,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/hearth/test", w.handleHearthTest)
 	mux.HandleFunc("/api/hearth/k4", w.handleHearthK4)
 	mux.HandleFunc("/api/hearth/powersave", w.handleHearthPowerSave)
+	mux.HandleFunc("/api/hearth/wol", w.handleHearthWol)
 
 	// Find a free port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
