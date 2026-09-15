@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -346,6 +347,34 @@ func TestKnobReconnectsAfterReadError(t *testing.T) {
 	second.reports <- []byte{0x03, 0xb7, 0x00}
 	waitFor(t, "event after reconnect", func() bool { return len(sink.snapshot()) == 1 })
 	k.Close()
+}
+
+// stallingTransport opens fine but every Read fails immediately (a stalled
+// pipe), unlike a timeout.
+type stallingTransport struct{}
+
+func (stallingTransport) Read(buf []byte) (int, error) { return 0, errors.New("pipe stalled") }
+func (stallingTransport) Close() error                 { return nil }
+
+// TestReadErrorsDoNotSpin: a knob that opens but fails every read must wait
+// k.retry before reopening, not spin the open/read/close loop tightly.
+func TestReadErrorsDoNotSpin(t *testing.T) {
+	var opens atomic.Int32
+	open := func() (transport, State, error) {
+		opens.Add(1)
+		return stallingTransport{}, StateConnected, nil
+	}
+
+	k := newKnob(&recordSink{}, nil, open, 50*time.Millisecond)
+	if err := k.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(220 * time.Millisecond)
+	k.Close()
+
+	if n := opens.Load(); n > 6 {
+		t.Fatalf("opens = %d, want <= 6 (a stalled read must wait k.retry before reopening)", n)
+	}
 }
 
 func TestCloseStopsReaderAndClosesTransport(t *testing.T) {

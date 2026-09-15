@@ -176,6 +176,12 @@ func (k *Knob) run() {
 		default:
 		}
 		k.setState(StateNotConnected)
+		// A knob that opens but fails every read would otherwise reopen in a tight loop.
+		select {
+		case <-k.stop:
+			return
+		case <-time.After(k.retry):
+		}
 	}
 }
 
