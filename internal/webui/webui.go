@@ -539,12 +539,17 @@ func (w *WebUI) handleTrace(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if !w.running || w.wk == nil {
+	if !w.running || (w.wk == nil && w.knob == nil) {
 		http.Error(rw, "not running", http.StatusBadRequest)
 		return
 	}
 
-	w.wk.SetTrace(req.Enabled)
+	if w.wk != nil {
+		w.wk.SetTrace(req.Enabled)
+	}
+	if w.knob != nil {
+		w.knob.SetTrace(req.Enabled)
+	}
 	writeJSON(rw, map[string]bool{"enabled": req.Enabled})
 }
 
