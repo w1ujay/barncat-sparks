@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
 	"github.com/ujay/barncat-sparks/internal/controls"
 	"github.com/ujay/barncat-sparks/internal/hidknob"
@@ -22,12 +25,18 @@ type fakeKnob struct {
 	started, closed, trace bool
 	learned                int
 	maps                   []hidknob.Mapping
+	onClose                func()
 }
 
 func (f *fakeKnob) Start() error         { f.started = true; return f.startErr }
 func (f *fakeKnob) State() hidknob.State { return f.state }
 func (f *fakeKnob) SetTrace(on bool)     { f.trace = on }
-func (f *fakeKnob) Close()               { f.closed = true }
+func (f *fakeKnob) Close() {
+	f.closed = true
+	if f.onClose != nil {
+		f.onClose()
+	}
+}
 func (f *fakeKnob) Learn(ctx context.Context) (uint16, error) {
 	f.learned++
 	return f.learnUsage, f.learnErr
@@ -193,11 +202,87 @@ func TestStopClosesKnob(t *testing.T) {
 	fk := &fakeKnob{state: hidknob.StateConnected}
 	w := knobWebUI()
 	w.knob = fk
+	w.knobNote = ", Knob: requires Windows"
 	w.mu.Lock()
 	w.stopLocked()
 	w.mu.Unlock()
 	if !fk.closed || w.knob != nil {
 		t.Fatalf("after stop: closed=%v knob=%v, want closed and cleared", fk.closed, w.knob)
+	}
+	if w.knobNote != "" {
+		t.Errorf("knobNote = %q after stop, want empty", w.knobNote)
+	}
+}
+
+// TestStatusFollowsKnobState: /api/status reads the knob's live state each
+// time, not a string frozen at Start.
+func TestStatusFollowsKnobState(t *testing.T) {
+	w := knobWebUI()
+	w.running = true
+	w.statusMsg = "Running — Radio: k4:9200 (TCP)"
+	w.knobNote = ", 1 knob row ignored"
+	fk := &fakeKnob{state: hidknob.StateConnected}
+	w.knob = fk
+
+	_, out := callJSON(t, w.handleStatus, http.MethodGet, "")
+	want := "Running — Radio: k4:9200 (TCP), Knob, 1 knob row ignored"
+	if out["message"] != want {
+		t.Fatalf("message = %q, want %q", out["message"], want)
+	}
+
+	fk.state = hidknob.StateNotConnected
+	_, out = callJSON(t, w.handleStatus, http.MethodGet, "")
+	want = "Running — Radio: k4:9200 (TCP), Knob: not connected (retrying), 1 knob row ignored"
+	if out["message"] != want {
+		t.Fatalf("message = %q, want %q", out["message"], want)
+	}
+}
+
+// pttLogRadio appends "ptt on"/"ptt off" to a shared log on SetPTT. Any other
+// Radio method panics (nil embedded interface), so an unexpected call fails
+// loudly.
+type pttLogRadio struct {
+	cat.Radio
+	log func(string)
+}
+
+func (r *pttLogRadio) SetPTT(on bool) error {
+	if on {
+		r.log("ptt on")
+	} else {
+		r.log("ptt off")
+	}
+	return nil
+}
+
+// TestStopReleasesPTTAfterClosingInputs pins the order stopLocked must
+// follow: close the knob (dropping a held PTT's only source of a release)
+// before the executor releases it, so the radio is never left transmitting.
+func TestStopReleasesPTTAfterClosingInputs(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	logEvent := func(s string) {
+		mu.Lock()
+		events = append(events, s)
+		mu.Unlock()
+	}
+
+	radio := &pttLogRadio{log: logEvent}
+	w := knobWebUI()
+	w.exec = controls.New(radio, false)
+	w.exec.Handle(controls.Event{Action: "ptt", Value: 127})
+	w.knob = &fakeKnob{onClose: func() { logEvent("knob closed") }}
+
+	w.mu.Lock()
+	w.stopLocked()
+	w.mu.Unlock()
+
+	want := []string{"ptt on", "knob closed", "ptt off"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	if w.exec != nil {
+		t.Error("w.exec not nil after stop")
 	}
 }
 

@@ -315,13 +315,17 @@ async function rescanMIDI() {
 }
 
 async function refreshKnobStatus() {
+  let st = '';
   try {
     const resp = await fetch('/api/knob/status');
-    knobState = (await resp.json()).state || '';
+    st = (await resp.json()).state || '';
   } catch (e) {
-    knobState = '';
+    st = '';
   }
-  renderMIDIDevices();
+  if (st !== knobState) {
+    knobState = st;
+    renderMIDIDevices();
+  }
 }
 
 function populateSelect(id, items, selected, placeholder) {
@@ -499,6 +503,7 @@ function onTypeChange(idx, type) {
 }
 
 async function learnKnob(idx) {
+  const row = mappings[idx];
   const btn = document.getElementById('learnBtn' + idx);
   const msg = document.getElementById('learnMsg' + idx);
   btn.disabled = true;
@@ -511,18 +516,26 @@ async function learnKnob(idx) {
       body: '{}'
     });
     const data = await resp.json();
+    const i = mappings.indexOf(row);
+    if (i === -1) return; // the row was removed while we were waiting
     if (!resp.ok) {
-      msg.textContent = data.error || ('Learn failed (' + resp.status + ')');
+      const m = document.getElementById('learnMsg' + i);
+      if (m) m.textContent = data.error || ('Learn failed (' + resp.status + ')');
       return;
     }
-    mappings[idx].type = 'knob';
-    mappings[idx].channel = 3;
-    mappings[idx].number = data.usage;
+    row.type = 'knob';
+    row.channel = 3;
+    row.number = data.usage;
     renderMappings();
   } catch (e) {
-    msg.textContent = 'Learn failed: ' + e.message;
+    const i = mappings.indexOf(row);
+    if (i === -1) return;
+    const m = document.getElementById('learnMsg' + i);
+    if (m) m.textContent = 'Learn failed: ' + e.message;
   } finally {
-    const b = document.getElementById('learnBtn' + idx);
+    const i = mappings.indexOf(row);
+    if (i === -1) return;
+    const b = document.getElementById('learnBtn' + i);
     if (b) {
       b.disabled = false;
       b.textContent = 'Learn';
@@ -707,6 +720,7 @@ async function pollStatus() {
     const resp = await fetch('/api/status');
     const s = await resp.json();
     applyStatus(s);
+    if (s.running && knobEnabled) refreshKnobStatus();
   } catch(e) { /* server may be gone */ }
 }
 
