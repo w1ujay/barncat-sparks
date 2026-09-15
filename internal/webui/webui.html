@@ -463,7 +463,9 @@ function typeSelect(idx, selected) {
 function directionSelect(idx, m) {
   const act = actions.find(a => a.name === m.action);
   if (!act || act.kind !== 'relative') return '';
-  const dir = (m.opts && m.opts.direction === -1) ? -1 : 1;
+  if (!m.opts) m.opts = {};
+  if (m.opts.direction !== 1 && m.opts.direction !== -1) m.opts.direction = 1;
+  const dir = m.opts.direction;
   return '<span class="mapping-field"><label>Direction</label>' +
     '<select id="knobDir'+idx+'" onchange="setDirection('+idx+',this.value)">' +
     '<option value="1"'+(dir === 1 ? ' selected' : '')+'>+</option>' +
