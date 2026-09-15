@@ -610,8 +610,7 @@ function removeMapping(idx) {
 
 function removeLastMapping() {
   if (mappings.length > 0) {
-    mappings.pop();
-    renderMappings();
+    removeMapping(mappings.length - 1);
   }
 }
 
