@@ -237,6 +237,7 @@ let availableMIDIDevices = [];
 let controlMaps = {};
 let knobEnabled = false;
 let knobState = '';   // last /api/knob/status: connected, not_set_up, not_connected, unsupported
+const pendingLearns = new Map(); // mapping row → AbortController of its waiting Learn
 let statusPoll = null;
 let sparksRunning = false;
 let hearthIdentity = null;  // last successful whoami
@@ -413,7 +414,7 @@ function renderMappings() {
     if (m.type === 'knob') {
       body = actionSelect(i, m.action, 'knob') +
         typeSelect(i, m.type) +
-        '<button class="secondary" id="learnBtn'+i+'" onclick="learnKnob('+i+')">Learn</button>' +
+        '<button class="secondary" id="learnBtn'+i+'" onclick="learnKnob('+i+')"' + (pendingLearns.has(m) ? ' disabled>Move the knob…' : '>Learn') + '</button>' +
         directionSelect(i, m) +
         optsFields(i, m.action, m.opts) +
         '<span class="learn-msg" id="learnMsg'+i+'"></span>';
@@ -484,6 +485,7 @@ function setDirection(idx, value) {
 
 function onTypeChange(idx, type) {
   const m = mappings[idx];
+  cancelLearn(m);
   m.type = type;
   if (type === 'knob') {
     m.channel = 3;
@@ -502,43 +504,60 @@ function onTypeChange(idx, type) {
   renderMappings();
 }
 
+// cancelLearn stops a Learn still waiting on row, so a late answer can't
+// overwrite a row the user changed or removed. Aborting the request also ends
+// the server's Learn right away instead of after its 10 seconds.
+function cancelLearn(row) {
+  const ctl = pendingLearns.get(row);
+  if (ctl) {
+    pendingLearns.delete(row);
+    ctl.abort();
+  }
+}
+
 async function learnKnob(idx) {
   const row = mappings[idx];
+  if (pendingLearns.has(row)) return;
+  const ctl = new AbortController();
+  pendingLearns.set(row, ctl);
   const btn = document.getElementById('learnBtn' + idx);
   const msg = document.getElementById('learnMsg' + idx);
   btn.disabled = true;
   btn.textContent = 'Move the knob…';
   msg.textContent = '';
+  // The row may have moved while we waited, so find its elements again.
+  const showMsg = text => {
+    const m = document.getElementById('learnMsg' + mappings.indexOf(row));
+    if (m) m.textContent = text;
+  };
+  let learned = false;
   try {
     const resp = await fetch('/api/knob/learn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: '{}'
+      body: '{}',
+      signal: ctl.signal
     });
     const data = await resp.json();
-    const i = mappings.indexOf(row);
-    if (i === -1) return; // the row was removed while we were waiting
+    if (pendingLearns.get(row) !== ctl) return; // cancelled: the row was changed or removed
     if (!resp.ok) {
-      const m = document.getElementById('learnMsg' + i);
-      if (m) m.textContent = data.error || ('Learn failed (' + resp.status + ')');
+      showMsg(data.error || ('Learn failed (' + resp.status + ')'));
       return;
     }
-    row.type = 'knob';
     row.channel = 3;
     row.number = data.usage;
-    renderMappings();
+    learned = true;
   } catch (e) {
-    const i = mappings.indexOf(row);
-    if (i === -1) return;
-    const m = document.getElementById('learnMsg' + i);
-    if (m) m.textContent = 'Learn failed: ' + e.message;
+    if (pendingLearns.get(row) === ctl) showMsg('Learn failed: ' + e.message);
   } finally {
-    const i = mappings.indexOf(row);
-    if (i === -1) return;
-    const b = document.getElementById('learnBtn' + i);
-    if (b) {
-      b.disabled = false;
-      b.textContent = 'Learn';
+    if (pendingLearns.get(row) === ctl) {
+      pendingLearns.delete(row);
+      const b = document.getElementById('learnBtn' + mappings.indexOf(row));
+      if (b) {
+        b.disabled = false;
+        b.textContent = 'Learn';
+      }
+      if (learned) renderMappings();
     }
   }
 }
@@ -584,6 +603,7 @@ function addMapping(entry) {
 }
 
 function removeMapping(idx) {
+  cancelLearn(mappings[idx]);
   mappings.splice(idx, 1);
   renderMappings();
 }
