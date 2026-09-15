@@ -92,6 +92,31 @@ func TestToKnobMappings(t *testing.T) {
 	}
 }
 
+// TestKnobRowSurvivesSaveLoad: a Knob row saved with plain-int opts (as the
+// web UI's JSON does) still yields a usable mapping after a save/load round
+// trip, once JSON has turned those ints into float64.
+func TestKnobRowSurvivesSaveLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparks-config.json")
+	cfg := &AppConfig{Mappings: []MappingEntry{
+		{Action: "vfo_tune", Type: "knob", Channel: 3, Number: 234, Opts: map[string]any{"step": 10, "direction": -1}},
+	}}
+	if err := SaveAppConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	maps, skipped := loaded.ToKnobMappings()
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %q, want none", skipped)
+	}
+	if len(maps) != 1 || maps[0].Usage != 234 || maps[0].Action != "vfo_tune" || maps[0].Direction != -1 {
+		t.Fatalf("mappings = %+v, want one mapping usage 234 action vfo_tune direction -1", maps)
+	}
+}
+
 func TestKnobControlNames(t *testing.T) {
 	want := ControlMap{
 		"knob:3:183": "Turn Right",
