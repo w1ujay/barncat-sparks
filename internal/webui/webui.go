@@ -414,8 +414,8 @@ func (w *WebUI) stopLocked() {
 	if w.knob != nil {
 		w.knob.Close()
 		w.knob = nil
-		w.knobNote = ""
 	}
+	w.knobNote = ""
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
 		w.midiDrv = nil
