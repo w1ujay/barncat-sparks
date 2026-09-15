@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
-	"github.com/ujay/barncat-sparks/internal/cat"
+	"github.com/ujay/barncat-sparks/internal/controls"
 )
 
 // MIDIConfig holds the MIDI controller configuration.
@@ -31,10 +30,10 @@ func (c *MIDIConfig) GetDevices() []string {
 
 // MIDIMapping maps a MIDI event to a K4 action.
 type MIDIMapping struct {
-	Type    string                 `json:"type"`
-	Channel int                    `json:"channel"`
-	Number  int                    `json:"number"`
-	Action  string                 `json:"action"`
+	Type    string         `json:"type"`
+	Channel int            `json:"channel"`
+	Number  int            `json:"number"`
+	Action  string         `json:"action"`
 	Opts    map[string]any `json:"opts"`
 }
 
@@ -49,20 +48,6 @@ func LoadMIDIConfig(path string) (*MIDIConfig, error) {
 		return nil, fmt.Errorf("parse MIDI config: %w", err)
 	}
 	return &cfg, nil
-}
-
-// SetVolumeCat sets an alternative Radio target for volume commands.
-// When set, volume/volume_b actions are sent here instead of the main radio.
-func (d *MIDIDriver) SetVolumeCat(r cat.Radio) {
-	d.volumeCat = r
-}
-
-// volumeTarget returns the Radio to use for volume commands.
-func (d *MIDIDriver) volumeTarget() cat.Radio {
-	if d.volumeCat != nil {
-		return d.volumeCat
-	}
-	return d.cat
 }
 
 // midiKey uniquely identifies a MIDI event for fast lookup.
@@ -97,7 +82,8 @@ func buildMappingIndex(cfg *MIDIConfig) map[midiKey]*MIDIMapping {
 	return idx
 }
 
-// handleMIDIEvent processes a raw MIDI message from the platform driver.
+// handleMIDIEvent processes a raw MIDI message from the platform driver and
+// hands mapped messages to the executor.
 func (d *MIDIDriver) handleMIDIEvent(status, data1, data2 byte) {
 	msgType := status & 0xF0
 	channel := status & 0x0F
@@ -115,7 +101,7 @@ func (d *MIDIDriver) handleMIDIEvent(status, data1, data2 byte) {
 			return
 		}
 		log.Printf("MIDI: note_on ch=%d note=%d vel=%d -> %s", channel, data1, data2, m.Action)
-		d.dispatch(m, int(data2))
+		d.exec.Handle(controls.Event{Action: m.Action, Opts: m.Opts, Value: int(data2)})
 
 	case 0x80: // Note Off
 		d.handleNoteOff(channel, data1)
@@ -128,389 +114,19 @@ func (d *MIDIDriver) handleMIDIEvent(status, data1, data2 byte) {
 			return
 		}
 		log.Printf("MIDI: cc ch=%d cc=%d val=%d -> %s", channel, data1, data2, m.Action)
-		d.dispatch(m, int(data2))
+		d.exec.Handle(controls.Event{Action: m.Action, Opts: m.Opts, Value: int(data2)})
 
 	default:
 		log.Printf("MIDI: unhandled msg=0x%02X ch=%d d1=%d d2=%d", msgType, channel, data1, data2)
 	}
 }
 
-// handleNoteOff processes note off events (used for PTT release).
+// handleNoteOff turns a note off on a PTT mapping into a PTT release.
 func (d *MIDIDriver) handleNoteOff(channel, number byte) {
 	key := midiKey{msgType: 0x90, channel: channel, number: number}
 	m, ok := d.index[key]
-	if !ok {
+	if !ok || m.Action != "ptt" {
 		return
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if m.Action == "ptt" && d.pttOn {
-		log.Printf("MIDI: note_off ch=%d note=%d -> ptt off", channel, number)
-		d.pttOn = false
-		// Synchronous, like key-down in dispatch, so release follows press.
-		d.cat.SetPTT(false)
-	}
-}
-
-// releasePTT is called from Close. It marks the driver closed and unkeys the
-// radio if MIDI keyed it: the pad's own release will never be processed, and
-// an event the loop is still finishing must not key the radio afterwards.
-func (d *MIDIDriver) releasePTT() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.closed = true
-	if d.pttOn {
-		log.Printf("MIDI: releasing PTT on close")
-		d.pttOn = false
-		d.cat.SetPTT(false)
-	}
-}
-
-// deviceDisconnected is called when a controller goes away (USB unplug). It
-// unkeys the radio if MIDI keyed it, because the pad's release event can never
-// arrive. pttOn doesn't record which device keyed it, so any disconnect
-// releases it; unkeying is the safe side. Unlike releasePTT, the driver stays
-// open, so the pads key the radio again once the device reconnects.
-func (d *MIDIDriver) deviceDisconnected(name string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.pttOn {
-		log.Printf("MIDI: releasing PTT, device %q disconnected", name)
-		d.pttOn = false
-		d.cat.SetPTT(false)
-	}
-}
-
-// optFloat returns a float64 option from a mapping's opts map, or the fallback.
-func optFloat(opts map[string]any, key string, fallback float64) float64 {
-	if opts == nil {
-		return fallback
-	}
-	v, ok := opts[key]
-	if !ok {
-		return fallback
-	}
-	f, ok := v.(float64)
-	if !ok {
-		return fallback
-	}
-	return f
-}
-
-// ccValue scales a MIDI CC value (0-127) to an output range, with optional invert.
-func ccValue(value, maxOut int, opts map[string]any) int {
-	if optFloat(opts, "invert", 0) != 0 {
-		value = 127 - value
-	}
-	return value * maxOut / 127
-}
-
-// dispatch executes the action for a MIDI event.
-func (d *MIDIDriver) dispatch(m *MIDIMapping, value int) {
-	switch m.Action {
-	case "ptt":
-		// PTT is sent synchronously, under mu, from the single event loop. A
-		// goroutine per press and per release could reach the radio as RX then
-		// TX and leave it transmitting after the pad is released.
-		// Never key after Close has released PTT (see releasePTT).
-		d.mu.Lock()
-		if !d.closed {
-			d.pttOn = true
-			d.cat.SetPTT(true)
-		}
-		d.mu.Unlock()
-
-	case "band_up":
-		go d.cat.BandUp()
-
-	case "band_down":
-		go d.cat.BandDown()
-
-	case "vfo_a":
-		go d.cat.SelectVFO(0)
-
-	case "vfo_b":
-		go d.cat.SelectVFO(1)
-
-	case "vfo_swap":
-		go d.cat.SwapVFO()
-
-	case "vfo_a_to_b":
-		go d.cat.VFOAtoB()
-
-	case "vfo_b_to_a":
-		go d.cat.VFOBtoA()
-
-	case "volume":
-		level := ccValue(value, 60, m.Opts)
-		go d.volumeTarget().SetVolume(0, level)
-
-	case "volume_b":
-		level := ccValue(value, 60, m.Opts)
-		go d.volumeTarget().SetVolume(1, level)
-
-	case "rf_gain":
-		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetRFGain(0, level)
-
-	case "rf_gain_b":
-		level := ccValue(value, 60, m.Opts)
-		go d.cat.SetRFGain(1, level)
-
-	case "power":
-		v := value
-		if optFloat(m.Opts, "invert", 0) != 0 {
-			v = 127 - v
-		}
-		// CC 0-100: 0.1W to 10.0W (0.1W per step, QRP range)
-		// CC 101-127: ~11W to 110W (~3.7W per step, QRO range)
-		if v <= 100 {
-			tenths := v + 1 // 1-101 -> 0.1W-10.1W, clamped to 100 max
-			if tenths > 100 {
-				tenths = 100
-			}
-			go d.cat.SetPower(tenths)
-		} else {
-			watts := 11 + (v-101)*99/26 // 11W-110W
-			go d.cat.SetPower(watts * 10)
-		}
-
-	case "speed":
-		wpm := 5 + value*94/127
-		go d.cat.SetSpeed(wpm)
-
-	case "rit":
-		d.ritOn = !d.ritOn
-		go d.cat.SetRIT(d.ritOn)
-
-	case "xit":
-		d.xitOn = !d.xitOn
-		go d.cat.SetXIT(d.xitOn)
-
-	case "rit_clear":
-		d.ritOn = false
-		go d.cat.ClearRIT()
-
-	case "nb":
-		d.nbOn = !d.nbOn
-		go d.cat.SetNB(d.nbOn)
-
-	case "nr":
-		d.nrOn = !d.nrOn
-		go d.cat.SetNR(d.nrOn)
-
-	case "split":
-		d.splitOn = !d.splitOn
-		go d.cat.SetSplit(d.splitOn)
-
-	case "vfo_tune":
-		step := int(optFloat(m.Opts, "step", 10))
-		d.tuneVFO(value, step)
-
-	case "vfo_b_tune":
-		step := int(optFloat(m.Opts, "step", 10))
-		d.tuneVFOB(value, step)
-
-	case "filter_bw":
-		minHz := int(optFloat(m.Opts, "min", 50))
-		maxHz := int(optFloat(m.Opts, "max", 3000))
-		bw := minHz + value*(maxHz-minHz)/127
-		go d.cat.SetFilterBW(bw)
-
-	case "filter_adjust":
-		step := int(optFloat(m.Opts, "step", 50))
-		delta := relativeCC(value, step)
-		if delta != 0 {
-			d.adjustFilter(delta)
-		}
-
-	case "filter_up":
-		step := int(optFloat(m.Opts, "step", 50))
-		d.adjustFilter(step)
-
-	case "filter_down":
-		step := int(optFloat(m.Opts, "step", 50))
-		d.adjustFilter(-step)
-
-	case "notch":
-		d.notchOn = !d.notchOn
-		go d.cat.SetNotch(d.notchOn)
-
-	case "notch_freq":
-		minHz := int(optFloat(m.Opts, "min", 150))
-		maxHz := int(optFloat(m.Opts, "max", 3000))
-		hz := minHz + value*(maxHz-minHz)/127
-		d.notchOn = true
-		d.notchHz = hz
-		go d.cat.SetNotchFreq(hz)
-
-	case "rf_gain_adjust":
-		step := int(optFloat(m.Opts, "step", 1))
-		delta := relativeCC(value, step)
-		if delta != 0 {
-			d.adjustRFGain(0, delta)
-		}
-
-	case "rf_gain_b_adjust":
-		step := int(optFloat(m.Opts, "step", 1))
-		delta := relativeCC(value, step)
-		if delta != 0 {
-			d.adjustRFGain(1, delta)
-		}
-
-	case "rf_gain_up":
-		step := int(optFloat(m.Opts, "step", 1))
-		d.adjustRFGain(0, -step)
-
-	case "rf_gain_down":
-		step := int(optFloat(m.Opts, "step", 1))
-		d.adjustRFGain(0, step)
-
-	case "rf_gain_b_up":
-		step := int(optFloat(m.Opts, "step", 1))
-		d.adjustRFGain(1, -step)
-
-	case "rf_gain_b_down":
-		step := int(optFloat(m.Opts, "step", 1))
-		d.adjustRFGain(1, step)
-
-	case "rf_gain_toggle":
-		go d.cat.ToggleRFGain(0)
-
-	case "rf_gain_b_toggle":
-		go d.cat.ToggleRFGain(1)
-
-	case "cw_msg":
-		if m.Opts != nil {
-			if text, ok := m.Opts["text"]; ok {
-				if s, ok := text.(string); ok && s != "" {
-					go d.cat.SendCWMessage(s)
-				}
-			}
-		}
-
-	case "dit_paddle":
-		dit := !d.config.PaddleSwap
-		go d.cat.SendCWElement(dit)
-
-	case "dah_paddle":
-		dit := d.config.PaddleSwap
-		go d.cat.SendCWElement(dit)
-
-	default:
-		log.Printf("MIDI: unknown action %q", m.Action)
-	}
-}
-
-// relativeCC decodes a 2's complement relative CC value.
-// 1-63 = positive (CW), 65-127 = negative (CCW), 0/64 = no movement.
-func relativeCC(value, step int) int {
-	if value >= 1 && value <= 63 {
-		return value * step
-	} else if value >= 65 && value <= 127 {
-		return (value - 128) * step
-	}
-	return 0
-}
-
-// tuneVFO adjusts VFO A frequency relative to current.
-// Caches frequency locally and throttles CAT commands to avoid flooding the radio.
-// Re-queries the radio on the first knob turn after any idle gap (>50ms) so band
-// changes and external tuning are picked up automatically.
-// Must be called from the event loop goroutine (not concurrently).
-func (d *MIDIDriver) tuneVFO(value, step int) {
-	delta := relativeCC(value, step)
-	if delta == 0 {
-		return
-	}
-
-	now := time.Now()
-
-	// Re-query radio on first turn after idle (frequency may have changed externally)
-	if !d.vfoKnown || now.Sub(d.lastTuneAt) > 250*time.Millisecond {
-		hz, err := d.cat.GetFreqA()
-		if err != nil {
-			log.Printf("MIDI: GetFreqA failed: %v", err)
-			return
-		}
-		d.vfoFreq = hz
-		d.vfoKnown = true
-	}
-
-	d.vfoFreq += delta
-	if d.vfoFreq < 0 {
-		d.vfoFreq = 0
-	}
-
-	// Throttle: max ~20 commands/sec to the radio
-	if now.Sub(d.lastTuneAt) < 50*time.Millisecond {
-		return
-	}
-	d.lastTuneAt = now
-	d.cat.SetFreqA(d.vfoFreq)
-}
-
-// tuneVFOB adjusts VFO B frequency relative to current.
-// Same caching/throttling as tuneVFO but for VFO B.
-func (d *MIDIDriver) tuneVFOB(value, step int) {
-	delta := relativeCC(value, step)
-	if delta == 0 {
-		return
-	}
-
-	now := time.Now()
-
-	if !d.vfoBKnown || now.Sub(d.lastTuneBAt) > 250*time.Millisecond {
-		hz, err := d.cat.GetFreqB()
-		if err != nil {
-			log.Printf("MIDI: GetFreqB failed: %v", err)
-			return
-		}
-		d.vfoBFreq = hz
-		d.vfoBKnown = true
-	}
-
-	d.vfoBFreq += delta
-	if d.vfoBFreq < 0 {
-		d.vfoBFreq = 0
-	}
-
-	if now.Sub(d.lastTuneBAt) < 50*time.Millisecond {
-		return
-	}
-	d.lastTuneBAt = now
-	d.cat.SetFreqB(d.vfoBFreq)
-}
-
-// adjustRFGain changes the RF gain attenuation by delta dB.
-// Tracks current level locally (defaults to 0 = full gain).
-func (d *MIDIDriver) adjustRFGain(recv int, delta int) {
-	gain := &d.rfGain
-	if recv == 1 {
-		gain = &d.rfGainB
-	}
-	*gain += delta
-	if *gain < 0 {
-		*gain = 0
-	}
-	if *gain > 60 {
-		*gain = 60
-	}
-	go d.cat.SetRFGain(recv, *gain)
-}
-
-// adjustFilter changes the filter bandwidth by deltaHz.
-// Tracks current BW locally (defaults to 500 Hz if unknown).
-func (d *MIDIDriver) adjustFilter(deltaHz int) {
-	if d.filterBW == 0 {
-		d.filterBW = 500 // sensible CW default
-	}
-	d.filterBW += deltaHz
-	if d.filterBW < 50 {
-		d.filterBW = 50
-	}
-	if d.filterBW > 4000 {
-		d.filterBW = 4000
-	}
-	go d.cat.SetFilterBW(d.filterBW)
+	d.exec.Handle(controls.Event{Action: "ptt", Release: true})
 }

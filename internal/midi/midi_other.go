@@ -5,9 +5,8 @@ package midi
 import (
 	"fmt"
 	"sync"
-	"time"
 
-	"github.com/ujay/barncat-sparks/internal/cat"
+	"github.com/ujay/barncat-sparks/internal/controls"
 )
 
 const mimData = 0x3C3 // MIM_DATA (matches midi_windows.go)
@@ -20,46 +19,20 @@ type midiEvent struct {
 	data2  byte
 }
 
-// MIDIDriver connects to MIDI devices and dispatches actions to the K4.
+// MIDIDriver connects to MIDI devices and hands their messages to an executor.
 type MIDIDriver struct {
-	mu        sync.Mutex
 	closeOnce sync.Once
-	cat       cat.Radio
-	volumeCat cat.Radio // optional: route volume commands here (e.g. QK4)
+	exec      *controls.Executor
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
-	pttOn     bool
-	closed    bool // set by Close under mu; PTT is never keyed after it
 	done      chan struct{}
 	events    chan midiEvent
-
-	// VFO tuning state (accessed only from event loop goroutine)
-	vfoFreq     int
-	vfoKnown    bool
-	lastTuneAt  time.Time
-	vfoBFreq    int
-	vfoBKnown   bool
-	lastTuneBAt time.Time
-
-	// Toggle state for button actions (accessed only from event loop goroutine)
-	ritOn    bool
-	xitOn    bool
-	nbOn     bool
-	nrOn     bool
-	splitOn  bool
-	notchOn  bool
-	notchHz  int // current notch frequency in Hz (0 = unknown, default 1000)
-	filterBW int // current filter BW in Hz (0 = unknown, default 500)
-
-	// RF gain state (accessed only from event loop goroutine)
-	rfGain  int // main RX attenuation level (0-60, 0=full gain)
-	rfGainB int // sub RX attenuation level
 }
 
-// NewMIDIDriver creates a new MIDI driver.
-func NewMIDIDriver(c cat.Radio, config *MIDIConfig) *MIDIDriver {
+// NewMIDIDriver creates a new MIDI driver that runs mapped actions on exec.
+func NewMIDIDriver(exec *controls.Executor, config *MIDIConfig) *MIDIDriver {
 	return &MIDIDriver{
-		cat:    c,
+		exec:   exec,
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),
@@ -79,10 +52,9 @@ func (d *MIDIDriver) Run() error {
 	return fmt.Errorf("MIDI support requires Windows (winmm.dll)")
 }
 
-// Close shuts down the MIDI driver, releasing a PTT that MIDI still holds.
+// Close shuts down the MIDI driver. Releasing a held PTT is the executor's job.
 func (d *MIDIDriver) Close() {
 	d.closeOnce.Do(func() {
 		close(d.done)
-		d.releasePTT()
 	})
 }

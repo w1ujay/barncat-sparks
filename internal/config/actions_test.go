@@ -41,3 +41,53 @@ func TestActionNames(t *testing.T) {
 		t.Errorf("ActionNames() returned %d, want %d", len(names), len(ActionRegistry))
 	}
 }
+
+// TestEveryActionHasKind: the knob filters actions by kind, so an action
+// without one would silently disappear from the knob's list.
+func TestEveryActionHasKind(t *testing.T) {
+	for name, def := range ActionRegistry {
+		switch def.Kind {
+		case KindAbsolute, KindRelative, KindButton:
+		default:
+			t.Errorf("action %q has kind %q, want absolute, relative or button", name, def.Kind)
+		}
+		if def.Momentary && def.Kind != KindButton {
+			t.Errorf("action %q is momentary but kind %q; momentary actions are buttons", name, def.Kind)
+		}
+	}
+}
+
+func TestActionKinds(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      string
+		momentary bool
+	}{
+		{"vfo_tune", KindRelative, false},
+		{"vfo_b_tune", KindRelative, false},
+		{"rf_gain_adjust", KindRelative, false},
+		{"rf_gain_b_adjust", KindRelative, false},
+		{"filter_adjust", KindRelative, false},
+		{"vfo_swap", KindButton, false},
+		{"rit_clear", KindButton, false},
+		{"rf_gain_up", KindButton, false},
+		{"filter_down", KindButton, false},
+		{"cw_msg", KindButton, false},
+		{"ptt", KindButton, true},
+		{"dit_paddle", KindButton, true},
+		{"dah_paddle", KindButton, true},
+		{"volume", KindAbsolute, false},
+		{"speed", KindAbsolute, false},
+		{"notch_freq", KindAbsolute, false},
+	}
+	for _, tt := range tests {
+		def, ok := ActionRegistry[tt.name]
+		if !ok {
+			t.Errorf("ActionRegistry missing %q", tt.name)
+			continue
+		}
+		if def.Kind != tt.kind || def.Momentary != tt.momentary {
+			t.Errorf("%s: kind=%q momentary=%v, want kind=%q momentary=%v", tt.name, def.Kind, def.Momentary, tt.kind, tt.momentary)
+		}
+	}
+}
