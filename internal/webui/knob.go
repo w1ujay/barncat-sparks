@@ -50,6 +50,27 @@ func writeJSONCode(rw http.ResponseWriter, code int, v any) {
 	json.NewEncoder(rw).Encode(v)
 }
 
+// knobStateText names a running knob's state for the status bar.
+func knobStateText(st hidknob.State) string {
+	switch st {
+	case hidknob.StateConnected:
+		return ", Knob"
+	case hidknob.StateNotSetUp:
+		return ", Knob: not set up (Zadig)"
+	default:
+		return ", Knob: not connected (retrying)"
+	}
+}
+
+// knobStatusLocked returns the knob part of the status bar, read from the
+// running knob each time. Must be called with w.mu held.
+func (w *WebUI) knobStatusLocked() string {
+	if w.knob == nil {
+		return w.knobNote
+	}
+	return knobStateText(w.knob.State()) + w.knobNote
+}
+
 // startKnobLocked starts the knob reader on w.exec and returns the text to
 // append to the running status. Must be called with w.mu held and w.exec set.
 func (w *WebUI) startKnobLocked() string {
@@ -58,35 +79,28 @@ func (w *WebUI) startKnobLocked() string {
 		log.Printf("knob: ignored %s", reason)
 	}
 
+	var rowsNote string
+	switch n := len(skipped); {
+	case n == 1:
+		rowsNote = ", 1 knob row ignored"
+	case n > 1:
+		rowsNote = fmt.Sprintf(", %d knob rows ignored", n)
+	}
+
 	k := newKnob(w.exec, maps)
 	k.SetTrace(w.config.ProtocolTrace)
-	var text string
 	if err := k.Start(); err != nil {
 		k.Close()
-		text = ", Knob: requires Windows"
+		w.knobNote = ", Knob: requires Windows" + rowsNote
 	} else {
 		w.knob = k
 		deadline := time.Now().Add(knobFirstOpenWait)
 		for k.State() == hidknob.StateNotConnected && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
-		switch k.State() {
-		case hidknob.StateConnected:
-			text = ", Knob"
-		case hidknob.StateNotSetUp:
-			text = ", Knob: not set up (Zadig)"
-		default:
-			text = ", Knob: not connected (retrying)"
-		}
+		w.knobNote = rowsNote
 	}
-
-	switch n := len(skipped); {
-	case n == 1:
-		text += ", 1 knob row ignored"
-	case n > 1:
-		text += fmt.Sprintf(", %d knob rows ignored", n)
-	}
-	return text
+	return w.knobStatusLocked()
 }
 
 // handleKnobStatus reports the knob's state: from the running knob while

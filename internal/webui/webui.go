@@ -36,6 +36,7 @@ type WebUI struct {
 	qk4VolumeCat *cat.CATClient     // optional QK4 connection for volume routing
 	exec         *controls.Executor // runs actions for MIDI (and the knob)
 	knob         knobRunner         // the USB knob reader while Started
+	knobNote     string             // status text after the knob's live state: a start failure and ignored rows
 	knobLearnMu  sync.Mutex         // one Learn at a time
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
@@ -178,7 +179,7 @@ type statusResponse struct {
 
 func (w *WebUI) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
-	resp := statusResponse{Running: w.running, Message: w.statusMsg}
+	resp := statusResponse{Running: w.running, Message: w.statusMsg + w.knobStatusLocked()}
 	if w.wk != nil {
 		resp.RTTYMode = w.wk.IsRTTY()
 	}
@@ -342,9 +343,8 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	knobStatus := ""
 	if w.config.KnobEnabled {
-		knobStatus = w.startKnobLocked()
+		w.startKnobLocked()
 	}
 
 	w.running = true
@@ -377,10 +377,9 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	if devs := w.config.GetMIDIDevices(); len(devs) > 0 {
 		status += fmt.Sprintf(", MIDI: %s", strings.Join(devs, ", "))
 	}
-	status += knobStatus
 	w.statusMsg = status
 
-	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg})
+	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg + w.knobStatusLocked()})
 }
 
 func (w *WebUI) handleStop(rw http.ResponseWriter, r *http.Request) {
@@ -415,6 +414,7 @@ func (w *WebUI) stopLocked() {
 	if w.knob != nil {
 		w.knob.Close()
 		w.knob = nil
+		w.knobNote = ""
 	}
 	if w.midiDrv != nil {
 		w.midiDrv.Close()
@@ -633,6 +633,5 @@ func (w *WebUI) decodeLoop(ctx context.Context, c cat.Radio) {
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(v)
+	writeJSONCode(rw, http.StatusOK, v)
 }
