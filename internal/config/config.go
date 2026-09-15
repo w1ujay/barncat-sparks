@@ -5,45 +5,56 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ujay/barncat-sparks/internal/hidknob"
 	"github.com/ujay/barncat-sparks/internal/midi"
 	"go.bug.st/serial"
 )
 
 // AppConfig holds all BarnCat Sparks settings, serialized to sparks-config.json.
 type AppConfig struct {
-	SerialPort    string         `json:"serial_port"`
-	CATAddress    string         `json:"cat_address"`
-	CATTransport  string         `json:"cat_transport"`
-	CATSerialPort string         `json:"cat_serial_port"`
-	CATSerialBaud int            `json:"cat_serial_baud"`
-	CATPassword   string         `json:"cat_password,omitempty"`
-	CATListen          string         `json:"cat_listen"`
-	RadioServerListen  string         `json:"radio_server_listen"`
-	AmpURL             string         `json:"amp_url"`
-	LP100Port          string         `json:"lp100_port"`
-	KeyerSpeed    int            `json:"keyer_speed"`
-	MIDIDevice    string         `json:"midi_device,omitempty"`
-	MIDIDevices   []string       `json:"midi_devices,omitempty"`
-	PaddleSwap     bool           `json:"paddle_swap"`
-	QK4Volume      bool           `json:"qk4_volume,omitempty"`
-	QK4Address     string         `json:"qk4_address,omitempty"`
-	HearthURL        string         `json:"hearth_url"`
-	HearthReplicaURL string         `json:"hearth_replica_url,omitempty"`
-	HearthToken      string         `json:"hearth_token,omitempty"`
-	HearthSite       string         `json:"hearth_site,omitempty"`
-	MinimizeToTray bool           `json:"minimize_to_tray"`
-	ProtocolTrace  bool           `json:"protocol_trace"`
-	Mappings       []MappingEntry `json:"mappings"`
+	SerialPort        string         `json:"serial_port"`
+	CATAddress        string         `json:"cat_address"`
+	CATTransport      string         `json:"cat_transport"`
+	CATSerialPort     string         `json:"cat_serial_port"`
+	CATSerialBaud     int            `json:"cat_serial_baud"`
+	CATPassword       string         `json:"cat_password,omitempty"`
+	CATListen         string         `json:"cat_listen"`
+	RadioServerListen string         `json:"radio_server_listen"`
+	AmpURL            string         `json:"amp_url"`
+	LP100Port         string         `json:"lp100_port"`
+	KeyerSpeed        int            `json:"keyer_speed"`
+	MIDIDevice        string         `json:"midi_device,omitempty"`
+	MIDIDevices       []string       `json:"midi_devices,omitempty"`
+	PaddleSwap        bool           `json:"paddle_swap"`
+	QK4Volume         bool           `json:"qk4_volume,omitempty"`
+	QK4Address        string         `json:"qk4_address,omitempty"`
+	HearthURL         string         `json:"hearth_url"`
+	HearthReplicaURL  string         `json:"hearth_replica_url,omitempty"`
+	HearthToken       string         `json:"hearth_token,omitempty"`
+	HearthSite        string         `json:"hearth_site,omitempty"`
+	MinimizeToTray    bool           `json:"minimize_to_tray"`
+	ProtocolTrace     bool           `json:"protocol_trace"`
+	KnobEnabled       bool           `json:"knob_enabled"`
+	Mappings          []MappingEntry `json:"mappings"`
 }
 
-// MappingEntry defines a single MIDI-to-action mapping in the config file.
+// MappingEntry defines a single mapping in the config file: a MIDI control
+// (type "cc" or "note_on") or a knob gesture (type "knob", channel = HID report
+// ID, number = usage code) and the action it runs.
 type MappingEntry struct {
-	Action  string                 `json:"action"`
-	Type    string                 `json:"type"`
-	Channel int                    `json:"channel"`
-	Number  int                    `json:"number"`
+	Action  string         `json:"action"`
+	Type    string         `json:"type"`
+	Channel int            `json:"channel"`
+	Number  int            `json:"number"`
 	Opts    map[string]any `json:"opts,omitempty"`
 }
+
+const (
+	// MappingTypeKnob marks a mapping row for the USB knob.
+	MappingTypeKnob = "knob"
+	// KnobReportID is the knob's consumer-control report, stored as the row's channel.
+	KnobReportID = 3
+)
 
 // DefaultAppConfig returns a config with sensible defaults.
 func DefaultAppConfig() *AppConfig {
@@ -89,24 +100,89 @@ func (c *AppConfig) GetMIDIDevices() []string {
 	return nil
 }
 
-// ToMIDIConfig converts AppConfig mappings to the MIDIConfig format
-// used by the existing MIDI driver.
+// ToMIDIConfig converts AppConfig mappings to the MIDIConfig format used by the
+// MIDI driver. Knob rows are left out.
 func (c *AppConfig) ToMIDIConfig() *midi.MIDIConfig {
 	mc := &midi.MIDIConfig{
 		Devices:    c.GetMIDIDevices(),
 		PaddleSwap: c.PaddleSwap,
-		Mappings:   make([]midi.MIDIMapping, len(c.Mappings)),
 	}
-	for i, m := range c.Mappings {
-		mc.Mappings[i] = midi.MIDIMapping{
+	for _, m := range c.Mappings {
+		if m.Type == MappingTypeKnob {
+			continue
+		}
+		mc.Mappings = append(mc.Mappings, midi.MIDIMapping{
 			Type:    m.Type,
 			Channel: m.Channel,
 			Number:  m.Number,
 			Action:  m.Action,
 			Opts:    m.Opts,
-		}
+		})
 	}
 	return mc
+}
+
+// ToKnobMappings converts Knob rows to knob mappings. A row the knob can't use
+// is skipped with a reason naming its 1-based position in the mappings list,
+// the same numbering the Settings page shows.
+func (c *AppConfig) ToKnobMappings() ([]hidknob.Mapping, []string) {
+	var maps []hidknob.Mapping
+	var skipped []string
+	for i, m := range c.Mappings {
+		if m.Type != MappingTypeKnob {
+			continue
+		}
+		row := i + 1
+		def, known := ActionRegistry[m.Action]
+		switch {
+		case m.Action == "":
+			skipped = append(skipped, fmt.Sprintf("row %d: no action chosen", row))
+			continue
+		case !known:
+			skipped = append(skipped, fmt.Sprintf("row %d: unknown action %q", row, m.Action))
+			continue
+		case m.Number <= 0 || m.Number > 0x3FF:
+			skipped = append(skipped, fmt.Sprintf("row %d: knob gesture not learned yet", row))
+			continue
+		case def.Momentary:
+			skipped = append(skipped, fmt.Sprintf("row %d: %s can't be used on the knob", row, def.Label))
+			continue
+		case def.Kind == KindAbsolute:
+			skipped = append(skipped, fmt.Sprintf("row %d: %s needs a slider, not the knob", row, def.Label))
+			continue
+		}
+		direction := 0
+		if def.Kind == KindRelative {
+			direction = knobDirection(m.Opts)
+			if direction == 0 {
+				skipped = append(skipped, fmt.Sprintf("row %d: %s needs a direction (+ or −)", row, def.Label))
+				continue
+			}
+		}
+		maps = append(maps, hidknob.Mapping{
+			Usage:     uint16(m.Number),
+			Action:    m.Action,
+			Opts:      m.Opts,
+			Direction: direction,
+		})
+	}
+	return maps, skipped
+}
+
+// knobDirection reads opts.direction: 1 or -1, or 0 when missing or invalid.
+// JSON numbers decode as float64.
+func knobDirection(opts map[string]any) int {
+	switch v := opts["direction"].(type) {
+	case float64:
+		if v == 1 || v == -1 {
+			return int(v)
+		}
+	case int:
+		if v == 1 || v == -1 {
+			return v
+		}
+	}
+	return 0
 }
 
 // ListSerialPorts returns available serial port names.

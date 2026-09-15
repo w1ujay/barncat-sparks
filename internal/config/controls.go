@@ -80,3 +80,16 @@ var dj2go2Controls = ControlMap{
 	"note_on:15:2": "Load A",
 	"note_on:15:3": "Load B",
 }
+
+// KnobControlNames names the gestures of the DROK/iWit knob as configured on
+// the user's unit (usage codes captured over WinUSB). Keys match Knob rows:
+// "knob:<report ID>:<usage decimal>". Another unit may send other codes; its
+// rows then show "Code 0x…" instead of a name.
+var KnobControlNames = ControlMap{
+	"knob:3:183": "Turn Right",         // 0xB7
+	"knob:3:234": "Turn Left",          // 0xEA
+	"knob:3:226": "Press",              // 0xE2
+	"knob:3:181": "Press + Turn Right", // 0xB5
+	"knob:3:233": "Press + Turn Left",  // 0xE9 (sent twice per click)
+	"knob:3:205": "Long Press",         // 0xCD
+}
