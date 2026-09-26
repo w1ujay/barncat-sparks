@@ -21,7 +21,7 @@ func newTestPort() *testPort {
 	return &testPort{written: make(chan byte, 256)}
 }
 
-func (p *testPort) Read([]byte) (int, error)                             { select {} }
+func (p *testPort) Read([]byte) (int, error) { select {} }
 func (p *testPort) Write(b []byte) (int, error) {
 	for _, v := range b {
 		p.written <- v
@@ -371,7 +371,7 @@ func TestRTTYLongText(t *testing.T) {
 
 	// All 30 chars flushed as single KY (no chunking — K4 drops back-to-back KYs)
 	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXYZABCD")
-	// RX is delayed by rttyTxDelay (30 chars at 45.45 baud ≈ 6s + 1s padding)
+	// RX is delayed by rttyAirTime + rttyTxPadding (30 chars at 45.45 baud ≈ 6s + 1s padding)
 	expectCmdTimeout(t, cmds, "RX", 10*time.Second)
 }
 
@@ -675,4 +675,86 @@ func TestPointerResetAfterDrainSendsNewText(t *testing.T) {
 	wk.processByte(0x00)
 	wk.processByte('T')
 	expectCmd(t, cmds, "KY T")
+}
+
+// TestRTTYBackToBackBracketsWaitForAllText: a second bracket sent while the K4
+// is still sending the first must hold PTT until both texts are on the air,
+// not just the second one's.
+func TestRTTYBackToBackBracketsWaitForAllText(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+
+	wk.processByte(0x00)
+	wk.processByte(0x13)
+	wk.processByte(0x80)
+	wk.processByte(0x00)
+	drainPort(tp, 100*time.Millisecond)
+
+	send := func(text string) {
+		wk.processByte('[')
+		for i := range len(text) {
+			wk.processByte(text[i])
+		}
+		wk.processByte(']')
+	}
+	send("W1AW W1AW W1AW W1AW") // 19 chars ≈ 3.8s on air
+	send("TU 599")              // 6 chars ≈ 1.2s; old timing released at ≈ 2.2s
+	expectCmd(t, cmds, "TX")
+	expectCmd(t, cmds, "KY W1AW W1AW W1AW W1AW")
+	expectCmd(t, cmds, "KY TU 599")
+
+	// 25 chars ≈ 4.95s + 1s padding.
+	select {
+	case c := <-cmds:
+		t.Fatalf("got %q before both texts were sent", c)
+	case <-time.After(5 * time.Second):
+	}
+	expectCmdTimeout(t, cmds, "RX", 3*time.Second)
+}
+
+func TestRTTYBaudotChars(t *testing.T) {
+	cases := []struct {
+		text string
+		want int
+	}{
+		{"", 1},
+		{"CQ TEST", 8},
+		// 28 chars + leading LTRS + FIGS at 3, 599, 05, 05, 1 and LTRS at
+		// C, NH, NH, U.
+		{" OM3CW 599 05 NH 05 NH NZ1U ", 38},
+	}
+	for _, c := range cases {
+		if got := rttyBaudotChars(c.text); got != c.want {
+			t.Errorf("rttyBaudotChars(%q) = %d, want %d", c.text, got, c.want)
+		}
+	}
+}
+
+// TestRTTYAbortDropsQueuedAirTime: text that clear buffer aborted is not on
+// the air, so the next transmission's PTT hold doesn't include it.
+func TestRTTYAbortDropsQueuedAirTime(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+
+	wk.processByte(0x00)
+	wk.processByte(0x13)
+	wk.processByte(0x80)
+	wk.processByte(0x00)
+	drainPort(tp, 100*time.Millisecond)
+
+	wk.processByte('[')
+	for i := range 60 {
+		wk.processByte(byte('A' + (i % 26)))
+	}
+	wk.processByte(']')  // ≈ 10s on air
+	wk.processByte(0x0A) // clear buffer aborts it
+	expectCmd(t, cmds, "TX")
+	expectCmd(t, cmds, "KY ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGH")
+	drainCmds(cmds, 200*time.Millisecond)
+
+	wk.processByte('[')
+	wk.processByte('E')
+	wk.processByte(']')
+	expectCmd(t, cmds, "TX")
+	expectCmd(t, cmds, "KY E")
+	// One character ≈ 0.3s + 1.5s padding, not the aborted 10s.
+	expectCmdTimeout(t, cmds, "RX", 3*time.Second)
 }
