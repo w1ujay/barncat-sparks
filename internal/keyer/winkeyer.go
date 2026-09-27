@@ -90,6 +90,7 @@ type Winkeyer struct {
 	rttyBaudRate   int                // 0=45.45, 1=50, 2=75, 3=100 baud
 	rttyDoneCancel context.CancelFunc // cancels the pending ] goroutine (PTT off)
 	rttyPTTActive  bool               // TX; sent, RX; not yet sent
+	bufferedPTT    bool               // PTT keyed by buffered command 0x18 and not yet released
 	rttyAirEnd     time.Time          // when the K4 finishes sending the text handed to it so far
 
 	// Protocol trace (verbose logging)
@@ -163,7 +164,9 @@ func (w *Winkeyer) SetTrace(enabled bool) {
 	}
 }
 
-// Run starts the main read loop. Blocks until the serial port closes.
+// Run starts the main read loop. Blocks until the serial port closes. If the
+// port fails before Close, whatever is keying the radio is stopped: the
+// logger's release (clear buffer, tune off, ]) can no longer arrive.
 func (w *Winkeyer) Run() {
 	buf := make([]byte, 1)
 	for {
@@ -171,9 +174,14 @@ func (w *Winkeyer) Run() {
 		if err != nil {
 			w.mu.Lock()
 			closed := w.closed
+			var stop keyingStop
+			if !closed {
+				stop, _ = w.stopKeyingLocked()
+			}
 			w.mu.Unlock()
 			if !closed {
 				log.Printf("WK: serial read error: %v", err)
+				w.sendStop(stop)
 			}
 			return
 		}
@@ -543,9 +551,12 @@ func (w *Winkeyer) execCommand() {
 
 	// Buffered commands (0x18-0x1F)
 	case 0x18: // Buffered PTT
+		// Sent synchronously under mu, like tune, so on and off reach the
+		// radio in order and every stop path sees the PTT it must release.
 		if len(w.params) > 0 {
 			on := w.params[0] != 0
-			go w.cat.SetPTT(on)
+			w.bufferedPTT = on
+			w.cat.SetPTT(on)
 		}
 
 	case 0x19: // Buffered key (tune for N seconds)
@@ -808,7 +819,7 @@ func (w *Winkeyer) clearBuffer() bool {
 // keyingStop is what a stop path must still send to unkey the radio.
 type keyingStop struct {
 	abortCW    bool // CW or RTTY text handed to the radio may still be keying
-	releasePTT bool // an RTTY bracket, its pending ] release, or a tune carrier holds PTT
+	releasePTT bool // an RTTY bracket, its pending ] release, a tune carrier, or buffered PTT holds PTT
 }
 
 // stopKeyingLocked cancels everything that may be keying the radio — the CW
@@ -821,10 +832,11 @@ func (w *Winkeyer) stopKeyingLocked() (keyingStop, bool) {
 	rtty := w.rttyInBracket || w.rttyDoneCancel != nil
 	stop := keyingStop{
 		abortCW:    w.busy || rtty,
-		releasePTT: rtty || w.rttyPTTActive || w.tuning,
+		releasePTT: rtty || w.rttyPTTActive || w.tuning || w.bufferedPTT,
 	}
 	prevStatus := w.statusByteLocked()
 	w.tuning = false
+	w.bufferedPTT = false
 	w.rttyPTTActive = false
 	w.clearBuffer() // stops sendLoop, cancels a pending ] release, ends the bracket
 	return stop, w.statusByteLocked() != prevStatus

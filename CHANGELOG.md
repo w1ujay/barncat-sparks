@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- Stop, clear buffer and a logger disconnect now release PTT keyed by WinKeyer buffered PTT (0x18), and a logger serial port that fails mid-tune or mid-RTTY-bracket unkeys the radio instead of leaving it transmitting
 - A MIDI jog spun while the radio is slow to answer can no longer crowd out a PTT release or a controller disconnect — only jog/knob steps are dropped when events back up, and PTT is released if anything else ever is
 - Stop no longer hangs when the radio link stalls mid-write — CAT writes time out after 2 s and closing the link doesn't wait for them
 - MIDI and knob commands reach the radio in the order they were made — a quick volume-up then mute no longer ends at full volume
