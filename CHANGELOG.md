@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-27
+
 ### Added
 - Operate tab Station panel shows the main battery from hearth — charge level plus charging/discharging power (e.g. "87% · charging +120 W"), marked stale when the reading is old, and hidden when the site has no battery
 
