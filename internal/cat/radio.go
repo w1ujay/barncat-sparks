@@ -66,6 +66,11 @@ type Radio interface {
 	// Text decode
 	SetTextDecode(on bool) error
 	QueryDecode() (string, error)
+
+	// Raw sends a command the interface doesn't model, without its
+	// semicolon. A bare query (two letters, optionally '$') returns the
+	// radio's reply without the semicolon; anything else returns "".
+	Raw(cmd string) (string, error)
 }
 
 // Compile-time check: *CATClient implements Radio.
