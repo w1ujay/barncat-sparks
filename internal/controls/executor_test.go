@@ -19,6 +19,19 @@ type fakeRadio struct {
 	freqA    int
 	getFreqA int
 	setFreqA []int
+
+	volDelay time.Duration // SetVolume to the maximum sleeps this long
+	volume   []int
+}
+
+func (r *fakeRadio) SetVolume(recv, level int) error {
+	if level == 60 && r.volDelay > 0 {
+		time.Sleep(r.volDelay)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.volume = append(r.volume, level)
+	return nil
 }
 
 func (r *fakeRadio) SetPTT(on bool) error {
@@ -156,5 +169,21 @@ func TestRelativeTuneSharesOneCache(t *testing.T) {
 	}
 	if len(sets) != 2 || sets[0] != 14074010 || sets[1] != 14074010 {
 		t.Errorf("SetFreqA calls = %v, want [14074010 14074010]", sets)
+	}
+}
+
+// TestCommandsReachRadioInOrder: a slow command must not be overtaken by the
+// next event's command — volume to maximum then to zero must end at zero.
+func TestCommandsReachRadioInOrder(t *testing.T) {
+	r := &fakeRadio{volDelay: 30 * time.Millisecond}
+	e := New(r)
+	e.Handle(Event{Action: "volume", Value: 127})
+	e.Handle(Event{Action: "volume", Value: 0})
+	time.Sleep(60 * time.Millisecond) // let any stray goroutine finish
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.volume) != 2 || r.volume[0] != 60 || r.volume[1] != 0 {
+		t.Errorf("SetVolume calls = %v, want [60 0]", r.volume)
 	}
 }
