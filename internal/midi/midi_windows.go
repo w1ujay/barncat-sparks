@@ -67,7 +67,7 @@ type MIDIDriver struct {
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	done      chan struct{}
-	events    chan midiEvent
+	events    *eventQueue
 	devices   []openDevice // active devices
 	cb        uintptr      // Windows callback (reused for reconnect)
 }
@@ -79,7 +79,7 @@ func NewMIDIDriver(exec *controls.Executor, config *MIDIConfig) *MIDIDriver {
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),
-		events: make(chan midiEvent, 64),
+		events: newEventQueue(64, 4096),
 	}
 }
 
@@ -120,10 +120,9 @@ func (d *MIDIDriver) Run() error {
 			ev.data1 = byte((dwParam1 >> 8) & 0xFF)
 			ev.data2 = byte((dwParam1 >> 16) & 0xFF)
 		}
-		select {
-		case d.events <- ev:
-		default:
-		}
+		// Only Control Change (jogs, knobs) may be dropped when the loop
+		// falls behind; notes carry PTT release and MIM_CLOSE a disconnect.
+		d.events.push(ev, wMsg == mimData && ev.status&0xF0 == 0xB0)
 		return 0
 	})
 
@@ -159,13 +158,20 @@ func (d *MIDIDriver) Run() error {
 
 	for {
 		select {
-		case ev := <-d.events:
-			switch ev.wMsg {
-			case mimClose:
-				// Device disconnected — Windows already invalidated the handle.
-				d.handleDisconnect(ev.hMidiIn, &disconnected, &ticker, &reconnectCh)
-			case mimData:
-				d.handleMIDIEvent(ev.status, ev.data1, ev.data2)
+		case <-d.events.ready:
+			evs, lost := d.events.drain()
+			for _, ev := range evs {
+				switch ev.wMsg {
+				case mimClose:
+					// Device disconnected — Windows already invalidated the handle.
+					d.handleDisconnect(ev.hMidiIn, &disconnected, &ticker, &reconnectCh)
+				case mimData:
+					d.handleMIDIEvent(ev.status, ev.data1, ev.data2)
+				}
+			}
+			if lost {
+				// A dropped message may have been a PTT release.
+				d.exec.ReleasePTT("MIDI event queue overflowed")
 			}
 
 		case <-reconnectCh:

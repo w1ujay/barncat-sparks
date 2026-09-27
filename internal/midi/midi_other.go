@@ -26,7 +26,7 @@ type MIDIDriver struct {
 	config    *MIDIConfig
 	index     map[midiKey]*MIDIMapping
 	done      chan struct{}
-	events    chan midiEvent
+	events    *eventQueue
 }
 
 // NewMIDIDriver creates a new MIDI driver that runs mapped actions on exec.
@@ -36,7 +36,7 @@ func NewMIDIDriver(exec *controls.Executor, config *MIDIConfig) *MIDIDriver {
 		config: config,
 		index:  buildMappingIndex(config),
 		done:   make(chan struct{}),
-		events: make(chan midiEvent, 64),
+		events: newEventQueue(64, 4096),
 	}
 }
 

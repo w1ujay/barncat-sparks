@@ -5,6 +5,7 @@
 package controls
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -36,13 +37,18 @@ type Executor struct {
 	pttOn  bool
 	closed bool // set by Close; PTT is never keyed after it
 
-	// VFO tuning state
+	// VFO tuning state. lastTuneAt is the last send; a step swallowed by the
+	// throttle arms flushA, which sends the cached frequency once it lapses.
 	vfoFreq     int
 	vfoKnown    bool
 	lastTuneAt  time.Time
+	sentFreqA   int
+	flushA      *time.Timer
 	vfoBFreq    int
 	vfoBKnown   bool
 	lastTuneBAt time.Time
+	sentFreqB   int
+	flushB      *time.Timer
 
 	// Toggle state for button actions
 	ritOn    bool
@@ -101,10 +107,17 @@ func (e *Executor) Handle(ev Event) {
 // the radio if a PTT is held, because that control's release can never arrive.
 // The executor stays open, so PTT keys again once the device is back.
 func (e *Executor) DeviceLost(name string) {
+	e.ReleasePTT(fmt.Sprintf("device %q disconnected", name))
+}
+
+// ReleasePTT unkeys the radio if a PTT is held, for an input that may have
+// lost the release (a disconnect, or dropped events). Unlike Close, the
+// executor stays open.
+func (e *Executor) ReleasePTT(reason string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.pttOn {
-		log.Printf("controls: releasing PTT, device %q disconnected", name)
+		log.Printf("controls: releasing PTT, %s", reason)
 		e.pttOn = false
 		e.cat.SetPTT(false)
 	}
@@ -160,41 +173,41 @@ func (e *Executor) dispatch(ev Event) {
 		}
 
 	case "band_up":
-		go e.cat.BandUp()
+		e.cat.BandUp()
 
 	case "band_down":
-		go e.cat.BandDown()
+		e.cat.BandDown()
 
 	case "vfo_a":
-		go e.cat.SelectVFO(0)
+		e.cat.SelectVFO(0)
 
 	case "vfo_b":
-		go e.cat.SelectVFO(1)
+		e.cat.SelectVFO(1)
 
 	case "vfo_swap":
-		go e.cat.SwapVFO()
+		e.cat.SwapVFO()
 
 	case "vfo_a_to_b":
-		go e.cat.VFOAtoB()
+		e.cat.VFOAtoB()
 
 	case "vfo_b_to_a":
-		go e.cat.VFOBtoA()
+		e.cat.VFOBtoA()
 
 	case "volume":
 		level := ccValue(value, 60, ev.Opts)
-		go e.volumeTarget().SetVolume(0, level)
+		e.volumeTarget().SetVolume(0, level)
 
 	case "volume_b":
 		level := ccValue(value, 60, ev.Opts)
-		go e.volumeTarget().SetVolume(1, level)
+		e.volumeTarget().SetVolume(1, level)
 
 	case "rf_gain":
 		level := ccValue(value, 60, ev.Opts)
-		go e.cat.SetRFGain(0, level)
+		e.cat.SetRFGain(0, level)
 
 	case "rf_gain_b":
 		level := ccValue(value, 60, ev.Opts)
-		go e.cat.SetRFGain(1, level)
+		e.cat.SetRFGain(1, level)
 
 	case "power":
 		v := value
@@ -208,39 +221,39 @@ func (e *Executor) dispatch(ev Event) {
 			if tenths > 100 {
 				tenths = 100
 			}
-			go e.cat.SetPower(tenths)
+			e.cat.SetPower(tenths)
 		} else {
 			watts := 11 + (v-101)*99/26 // 11W-110W
-			go e.cat.SetPower(watts * 10)
+			e.cat.SetPower(watts * 10)
 		}
 
 	case "speed":
 		wpm := 5 + value*94/127
-		go e.cat.SetSpeed(wpm)
+		e.cat.SetSpeed(wpm)
 
 	case "rit":
 		e.ritOn = !e.ritOn
-		go e.cat.SetRIT(e.ritOn)
+		e.cat.SetRIT(e.ritOn)
 
 	case "xit":
 		e.xitOn = !e.xitOn
-		go e.cat.SetXIT(e.xitOn)
+		e.cat.SetXIT(e.xitOn)
 
 	case "rit_clear":
 		e.ritOn = false
-		go e.cat.ClearRIT()
+		e.cat.ClearRIT()
 
 	case "nb":
 		e.nbOn = !e.nbOn
-		go e.cat.SetNB(e.nbOn)
+		e.cat.SetNB(e.nbOn)
 
 	case "nr":
 		e.nrOn = !e.nrOn
-		go e.cat.SetNR(e.nrOn)
+		e.cat.SetNR(e.nrOn)
 
 	case "split":
 		e.splitOn = !e.splitOn
-		go e.cat.SetSplit(e.splitOn)
+		e.cat.SetSplit(e.splitOn)
 
 	case "vfo_tune":
 		step := int(optFloat(ev.Opts, "step", 10))
@@ -254,7 +267,7 @@ func (e *Executor) dispatch(ev Event) {
 		minHz := int(optFloat(ev.Opts, "min", 50))
 		maxHz := int(optFloat(ev.Opts, "max", 3000))
 		bw := minHz + value*(maxHz-minHz)/127
-		go e.cat.SetFilterBW(bw)
+		e.cat.SetFilterBW(bw)
 
 	case "filter_adjust":
 		step := int(optFloat(ev.Opts, "step", 50))
@@ -272,7 +285,7 @@ func (e *Executor) dispatch(ev Event) {
 
 	case "notch":
 		e.notchOn = !e.notchOn
-		go e.cat.SetNotch(e.notchOn)
+		e.cat.SetNotch(e.notchOn)
 
 	case "notch_freq":
 		minHz := int(optFloat(ev.Opts, "min", 150))
@@ -280,7 +293,7 @@ func (e *Executor) dispatch(ev Event) {
 		hz := minHz + value*(maxHz-minHz)/127
 		e.notchOn = true
 		e.notchHz = hz
-		go e.cat.SetNotchFreq(hz)
+		e.cat.SetNotchFreq(hz)
 
 	case "rf_gain_adjust":
 		step := int(optFloat(ev.Opts, "step", 1))
@@ -311,14 +324,14 @@ func (e *Executor) dispatch(ev Event) {
 		e.adjustRFGain(1, step)
 
 	case "rf_gain_toggle":
-		go e.cat.ToggleRFGain(0)
+		e.cat.ToggleRFGain(0)
 
 	case "rf_gain_b_toggle":
-		go e.cat.ToggleRFGain(1)
+		e.cat.ToggleRFGain(1)
 
 	case "cw_msg":
 		if s, ok := ev.Opts["text"].(string); ok && s != "" {
-			go e.cat.SendCWMessage(s)
+			e.cat.SendCWMessage(s)
 		}
 
 	default:
@@ -366,10 +379,21 @@ func (e *Executor) tuneVFO(value, step int) {
 	}
 
 	// Throttle: max ~20 commands/sec to the radio
-	if now.Sub(e.lastTuneAt) < 50*time.Millisecond {
+	if wait := tuneThrottle - now.Sub(e.lastTuneAt); wait > 0 {
+		e.flushLater(&e.flushA, wait, func() {
+			if e.vfoFreq != e.sentFreqA {
+				e.sendFreqA()
+			}
+		})
 		return
 	}
-	e.lastTuneAt = now
+	e.sendFreqA()
+}
+
+// sendFreqA sends the cached VFO A frequency. Must be called with e.mu held.
+func (e *Executor) sendFreqA() {
+	e.lastTuneAt = time.Now()
+	e.sentFreqA = e.vfoFreq
 	e.cat.SetFreqA(e.vfoFreq)
 }
 
@@ -398,11 +422,44 @@ func (e *Executor) tuneVFOB(value, step int) {
 		e.vfoBFreq = 0
 	}
 
-	if now.Sub(e.lastTuneBAt) < 50*time.Millisecond {
+	if wait := tuneThrottle - now.Sub(e.lastTuneBAt); wait > 0 {
+		e.flushLater(&e.flushB, wait, func() {
+			if e.vfoBFreq != e.sentFreqB {
+				e.sendFreqB()
+			}
+		})
 		return
 	}
-	e.lastTuneBAt = now
+	e.sendFreqB()
+}
+
+// sendFreqB sends the cached VFO B frequency. Must be called with e.mu held.
+func (e *Executor) sendFreqB() {
+	e.lastTuneBAt = time.Now()
+	e.sentFreqB = e.vfoBFreq
 	e.cat.SetFreqB(e.vfoBFreq)
+}
+
+// tuneThrottle is the minimum gap between VFO sends (~20/sec).
+const tuneThrottle = 50 * time.Millisecond
+
+// flushLater runs send after wait unless a flush is already pending, so steps
+// swallowed by the throttle still reach the radio once it lapses. send skips
+// a frequency already sent by a step in the meantime. Must be called with
+// e.mu held; send runs with e.mu held, and not at all after Close.
+func (e *Executor) flushLater(t **time.Timer, wait time.Duration, send func()) {
+	if *t != nil {
+		return
+	}
+	*t = time.AfterFunc(wait, func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		*t = nil
+		if e.closed {
+			return
+		}
+		send()
+	})
 }
 
 // adjustRFGain changes the RF gain attenuation by delta dB. Tracks the level
@@ -419,7 +476,7 @@ func (e *Executor) adjustRFGain(recv int, delta int) {
 	if *gain > 60 {
 		*gain = 60
 	}
-	go e.cat.SetRFGain(recv, *gain)
+	e.cat.SetRFGain(recv, *gain)
 }
 
 // adjustFilter changes the filter bandwidth by deltaHz. Tracks the width
@@ -435,5 +492,5 @@ func (e *Executor) adjustFilter(deltaHz int) {
 	if e.filterBW > 4000 {
 		e.filterBW = 4000
 	}
-	go e.cat.SetFilterBW(e.filterBW)
+	e.cat.SetFilterBW(e.filterBW)
 }
