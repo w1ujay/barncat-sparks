@@ -34,6 +34,7 @@ type PowerSave struct {
 	Phase      string    `json:"phase"` // up | down
 	NextChange time.Time `json:"next_change,omitzero"`
 	NextUpAt   time.Time `json:"next_up_at,omitzero"`
+	HeldBy     string    `json:"held_by,omitempty"` // rig holding the dish up while armed and down; empty: no hold
 
 	// Replica only.
 	Desired            string    `json:"desired,omitempty"` // queued "on" | "off"

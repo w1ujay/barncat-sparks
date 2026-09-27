@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Operate tab Power-save row shows "armed · held up: K4 on" in amber when hearth holds the Starlink dish up because the rig is on, with no "down until" countdown while the dish stays up; via the replica it adds "(as of last contact)" once the push is over 120 s old. Needs hearth a2463c4 or later — older builds show the row as before
+
 ## [0.3.1] - 2026-09-27
 
 ### Added

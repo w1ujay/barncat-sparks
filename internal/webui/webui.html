@@ -874,7 +874,7 @@ function resetStationView() {
   src.className = 'station-source';
   src.textContent = '—';
   document.getElementById('k4State').textContent = '—';
-  document.getElementById('psState').textContent = '—';
+  renderPowerSave(null, 0);
   renderBattery(null, false);
   const id = document.getElementById('hearthIdentity');
   id.className = 'station-note';
@@ -1005,10 +1005,24 @@ function describeK4(k4) {
   }
 }
 
-function describePowerSave(ps) {
+// psHeld says whether a rig is holding the dish up through an armed down
+// phase. Hearth builds that predate held_by never send it: absent is no hold.
+function psHeld(ps) {
+  return !!(ps && ps.enabled && ps.armed && ps.held_by);
+}
+
+// describePowerSave is the Power-save row's text. While a rig holds the dish
+// up there is no "down until" countdown: the link stays up. pushAgeSec is the
+// replica's push age (0 from the Pi); a hold older than 120 s is only as
+// fresh as the cabin's last push.
+function describePowerSave(ps, pushAgeSec) {
   if (!ps || !ps.enabled) return '—';
   let t;
   if (!ps.armed) t = 'disarmed';
+  else if (psHeld(ps)) {
+    t = 'armed · held up: ' + String(ps.held_by).toUpperCase() + ' on';
+    if (pushAgeSec > 120) t += ' (as of last contact)';
+  }
   else if (ps.phase === 'down' && ps.next_up_at) t = 'armed · down until ' + fmtClock(ps.next_up_at);
   else t = 'armed · ' + (ps.phase || 'up');
   if (ps.desired) {
@@ -1017,6 +1031,13 @@ function describePowerSave(ps) {
     if (ps.desired_at) t += ' ' + fmtAge(ageSec(ps.desired_at)) + ' ago';
   }
   return t;
+}
+
+// renderPowerSave fills the Power-save row; a held-up dish is amber.
+function renderPowerSave(ps, pushAgeSec) {
+  const val = document.getElementById('psState');
+  val.className = 'station-value' + (psHeld(ps) ? ' warn' : '');
+  val.textContent = describePowerSave(ps, pushAgeSec);
 }
 
 // describeBattery is the Battery row's text, e.g. "87% · charging +120 W".
@@ -1057,7 +1078,7 @@ function renderHearthStatus() {
     src.className = 'station-source warn';
     let t = 'Replica · cabin dark, last heard ' + fmtAge(s.push_age_sec || 0) + ' ago';
     const ps = s.powersave;
-    if (ps && ps.armed && ps.next_up_at) t += ', next window ' + fmtClock(ps.next_up_at);
+    if (ps && ps.armed && ps.next_up_at && !psHeld(ps)) t += ', next window ' + fmtClock(ps.next_up_at);
     if (ps && ps.overdue_sec > 0) t += ' — OVERDUE ' + fmtAge(ps.overdue_sec);
     if (s.error) t += ' — ' + s.error;
     src.textContent = t;
@@ -1066,7 +1087,7 @@ function renderHearthStatus() {
     src.textContent = 'Unreachable — ' + (s.error || 'no response');
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
-  document.getElementById('psState').textContent = describePowerSave(s.powersave);
+  renderPowerSave(s.powersave, s.source === 'replica' ? (s.push_age_sec || 0) : 0);
   renderBattery(s.battery, s.source === 'replica');
   if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
     const gen = hearthGen;

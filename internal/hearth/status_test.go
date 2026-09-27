@@ -118,6 +118,48 @@ func TestStatusNoBatteryConfigured(t *testing.T) {
 	}
 }
 
+// While the K4 reads on, hearth holds the dish up through an armed down
+// phase and names the rig in held_by.
+func TestStatusPowerSaveHeldBy(t *testing.T) {
+	pi := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/status": jsonReply(`{"powersave":{"enabled":true,"armed":true,"phase":"down",
+			"window":"day","next_up_at":"2026-09-27T16:00:00Z","relay":"starlink_mains","held_by":"k4"}}`),
+	})
+	st := (&Client{PiURL: pi.URL}).Status(context.Background())
+	if ps := st.PowerSave; ps == nil || !ps.Armed || ps.Phase != "down" || ps.HeldBy != "k4" {
+		t.Errorf("powersave = %+v, want armed/down held by k4", st.PowerSave)
+	}
+}
+
+// Hearth omits held_by when nothing holds the dish, and builds before
+// a2463c4 never send it: absent reads as no hold.
+func TestStatusPowerSaveNotHeld(t *testing.T) {
+	pi := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/status": jsonReply(piStatusJSON),
+	})
+	st := (&Client{PiURL: pi.URL}).Status(context.Background())
+	if ps := st.PowerSave; ps == nil || ps.HeldBy != "" {
+		t.Errorf("powersave = %+v, want held_by empty", st.PowerSave)
+	}
+}
+
+// The replica serves the pushed blob, so a hold pushed by the cabin survives
+// the merge of the replica's own power-save fields.
+func TestStatusReplicaKeepsHeldBy(t *testing.T) {
+	replica := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/status": jsonReply(`{"replica":true,"push_age_sec":30,
+			"powersave":{"enabled":true,"armed":true,"phase":"down","held_by":"k4"}}`),
+		"GET /api/powersave": jsonReply(replicaPowerSaveJSON),
+	})
+	st := (&Client{PiURL: deadURL(t), ReplicaURL: replica.URL}).Status(context.Background())
+	if st.Source != SourceReplica {
+		t.Fatalf("source = %q (err %q), want replica", st.Source, st.Err)
+	}
+	if ps := st.PowerSave; ps == nil || ps.HeldBy != "k4" {
+		t.Errorf("powersave = %+v, want held_by k4 from the pushed blob", st.PowerSave)
+	}
+}
+
 func TestStatusPiHTTPErrorDoesNotFallBack(t *testing.T) {
 	pi := newFakeHearth(t, map[string]http.HandlerFunc{
 		"GET /api/status": errorReply(http.StatusInternalServerError, "boom"),
