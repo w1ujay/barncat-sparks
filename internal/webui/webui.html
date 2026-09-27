@@ -1102,7 +1102,7 @@ function renderHearthStatus() {
     src.textContent = 'Unreachable — ' + (s.error || 'no response');
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
-  endK4PowerOnWait(s.k4);
+  endK4PowerOnWait(s);
   renderPowerSave(s.powersave, s.source === 'replica' ? (s.push_age_sec || 0) : 0);
   renderBattery(s.battery, s.source === 'replica');
   if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
@@ -1121,9 +1121,10 @@ function renderHearthStatus() {
   renderHearthControls();
 }
 
-// endK4PowerOnWait clears the pulse-power message once the K4 reads on.
-function endK4PowerOnWait(k4) {
-  if (k4PowerOnWait && k4 && k4.card_state === 'on') setStationMsg('', false);
+// endK4PowerOnWait clears the pulse-power message once the Pi reads the K4
+// on. A replica snapshot can predate the pulse, so its "on" doesn't count.
+function endK4PowerOnWait(s) {
+  if (k4PowerOnWait && s && s.source === 'pi' && s.k4 && s.k4.card_state === 'on') setStationMsg('', false);
 }
 
 // effectiveArmed is the power-save state the station is heading for. On the
