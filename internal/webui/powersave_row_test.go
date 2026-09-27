@@ -235,18 +235,23 @@ console.log(JSON.stringify(cases.map(armConfirmText)));
 }
 
 // TestK4PowerOnWaitClears checks that the pulse-power message clears once the
-// K4 reads on, stays while it doesn't, and that another message isn't cleared.
+// Pi reads the K4 on, stays while it doesn't or while only the replica says
+// on (its snapshot can predate the pulse), and that another message isn't
+// cleared.
 func TestK4PowerOnWaitClears(t *testing.T) {
 	const body = `
 const el = {className: '', textContent: ''};
 const document = {getElementById: () => el};
 const out = [];
 function pulse() { setStationMsg('Pulsed power — waiting for the rig to come up', false); k4PowerOnWait = true; }
+const pi = st => ({source: 'pi', k4: {card_state: st}});
 pulse();
-endK4PowerOnWait({card_state: 'unreachable'}); out.push(el.textContent);
-endK4PowerOnWait({card_state: 'on'});          out.push(el.textContent);
+endK4PowerOnWait(pi('unreachable')); out.push(el.textContent);
+endK4PowerOnWait({source: 'replica', push_age_sec: 3600, k4: {card_state: 'on'}}); out.push(el.textContent);
+endK4PowerOnWait({source: 'unreachable'}); out.push(el.textContent);
+endK4PowerOnWait(pi('on')); out.push(el.textContent);
 pulse(); setStationMsg('Power-save armed', false);
-endK4PowerOnWait({card_state: 'on'});          out.push(el.textContent);
+endK4PowerOnWait(pi('on')); out.push(el.textContent);
 console.log(JSON.stringify(out));
 `
 	src := "let k4PowerOnWait = false;\n"
@@ -255,7 +260,8 @@ console.log(JSON.stringify(out));
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("node output %q: %v", out, err)
 	}
-	want := []string{"Pulsed power — waiting for the rig to come up", "", "Power-save armed"}
+	const waiting = "Pulsed power — waiting for the rig to come up"
+	want := []string{waiting, waiting, waiting, "", "Power-save armed"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("step %d: message = %q, want %q", i, got[i], want[i])

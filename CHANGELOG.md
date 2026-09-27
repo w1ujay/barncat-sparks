@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Power-save no longer shows "arm queued" or "disarm queued" from the replica once the cabin already matches it — hearth keeps the last request as standing state after the cabin applies it
-- "Pulsed power — waiting for the rig to come up" clears once the K4 reads on
+- "Pulsed power — waiting for the rig to come up" clears once the Pi reads the K4 on (an older replica snapshot doesn't count)
 
 ## [0.3.1] - 2026-09-27
 
