@@ -36,13 +36,18 @@ type Executor struct {
 	pttOn  bool
 	closed bool // set by Close; PTT is never keyed after it
 
-	// VFO tuning state
+	// VFO tuning state. lastTuneAt is the last send; a step swallowed by the
+	// throttle arms flushA, which sends the cached frequency once it lapses.
 	vfoFreq     int
 	vfoKnown    bool
 	lastTuneAt  time.Time
+	sentFreqA   int
+	flushA      *time.Timer
 	vfoBFreq    int
 	vfoBKnown   bool
 	lastTuneBAt time.Time
+	sentFreqB   int
+	flushB      *time.Timer
 
 	// Toggle state for button actions
 	ritOn    bool
@@ -366,10 +371,21 @@ func (e *Executor) tuneVFO(value, step int) {
 	}
 
 	// Throttle: max ~20 commands/sec to the radio
-	if now.Sub(e.lastTuneAt) < 50*time.Millisecond {
+	if wait := tuneThrottle - now.Sub(e.lastTuneAt); wait > 0 {
+		e.flushLater(&e.flushA, wait, func() {
+			if e.vfoFreq != e.sentFreqA {
+				e.sendFreqA()
+			}
+		})
 		return
 	}
-	e.lastTuneAt = now
+	e.sendFreqA()
+}
+
+// sendFreqA sends the cached VFO A frequency. Must be called with e.mu held.
+func (e *Executor) sendFreqA() {
+	e.lastTuneAt = time.Now()
+	e.sentFreqA = e.vfoFreq
 	e.cat.SetFreqA(e.vfoFreq)
 }
 
@@ -398,11 +414,44 @@ func (e *Executor) tuneVFOB(value, step int) {
 		e.vfoBFreq = 0
 	}
 
-	if now.Sub(e.lastTuneBAt) < 50*time.Millisecond {
+	if wait := tuneThrottle - now.Sub(e.lastTuneBAt); wait > 0 {
+		e.flushLater(&e.flushB, wait, func() {
+			if e.vfoBFreq != e.sentFreqB {
+				e.sendFreqB()
+			}
+		})
 		return
 	}
-	e.lastTuneBAt = now
+	e.sendFreqB()
+}
+
+// sendFreqB sends the cached VFO B frequency. Must be called with e.mu held.
+func (e *Executor) sendFreqB() {
+	e.lastTuneBAt = time.Now()
+	e.sentFreqB = e.vfoBFreq
 	e.cat.SetFreqB(e.vfoBFreq)
+}
+
+// tuneThrottle is the minimum gap between VFO sends (~20/sec).
+const tuneThrottle = 50 * time.Millisecond
+
+// flushLater runs send after wait unless a flush is already pending, so steps
+// swallowed by the throttle still reach the radio once it lapses. send skips
+// a frequency already sent by a step in the meantime. Must be called with
+// e.mu held; send runs with e.mu held, and not at all after Close.
+func (e *Executor) flushLater(t **time.Timer, wait time.Duration, send func()) {
+	if *t != nil {
+		return
+	}
+	*t = time.AfterFunc(wait, func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		*t = nil
+		if e.closed {
+			return
+		}
+		send()
+	})
 }
 
 // adjustRFGain changes the RF gain attenuation by delta dB. Tracks the level

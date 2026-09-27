@@ -20,6 +20,9 @@ type fakeRadio struct {
 	getFreqA int
 	setFreqA []int
 
+	freqB    int
+	setFreqB []int
+
 	volDelay time.Duration // SetVolume to the maximum sleeps this long
 	volume   []int
 }
@@ -55,6 +58,19 @@ func (r *fakeRadio) SetFreqA(hz int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.setFreqA = append(r.setFreqA, hz)
+	return nil
+}
+
+func (r *fakeRadio) GetFreqB() (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.freqB, nil
+}
+
+func (r *fakeRadio) SetFreqB(hz int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setFreqB = append(r.setFreqB, hz)
 	return nil
 }
 
@@ -160,15 +176,16 @@ func TestRelativeTuneSharesOneCache(t *testing.T) {
 
 	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})   // e.g. a DJ2GO2 jog: query, then 14074010
 	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 127}) // e.g. the knob: cached, back to 14074000, throttled
-	time.Sleep(60 * time.Millisecond)                           // past the 50 ms throttle, inside the 250 ms cache
-	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})   // cached: 14074010, sent
+	time.Sleep(60 * time.Millisecond)                           // the trailing flush sends 14074000
+	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})   // cached: 14074010, throttled behind the flush
+	time.Sleep(100 * time.Millisecond)                          // flushed
 
 	_, gets, sets := r.snapshot()
 	if gets != 1 {
 		t.Errorf("GetFreqA called %d times, want 1 (the cache is shared)", gets)
 	}
-	if len(sets) != 2 || sets[0] != 14074010 || sets[1] != 14074010 {
-		t.Errorf("SetFreqA calls = %v, want [14074010 14074010]", sets)
+	if want := []int{14074010, 14074000, 14074010}; !equalInts(sets, want) {
+		t.Errorf("SetFreqA calls = %v, want %v", sets, want)
 	}
 }
 
@@ -185,5 +202,55 @@ func TestCommandsReachRadioInOrder(t *testing.T) {
 	defer r.mu.Unlock()
 	if len(r.volume) != 2 || r.volume[0] != 60 || r.volume[1] != 0 {
 		t.Errorf("SetVolume calls = %v, want [60 0]", r.volume)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestTuneFlushesThrottledSteps: steps swallowed by the throttle are sent
+// once it lapses, so three quick +10 Hz steps land 30 Hz up on both VFOs,
+// and a later step after an idle gap builds on that.
+func TestTuneFlushesThrottledSteps(t *testing.T) {
+	r := &fakeRadio{freqA: 14074000, freqB: 7030000}
+	e := New(r)
+	step := map[string]any{"step": float64(10)}
+	for range 3 {
+		e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})
+		e.Handle(Event{Action: "vfo_b_tune", Opts: step, Value: 1})
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	r.mu.Lock()
+	a, b := append([]int(nil), r.setFreqA...), append([]int(nil), r.setFreqB...)
+	r.mu.Unlock()
+	if len(a) == 0 || a[len(a)-1] != 14074030 {
+		t.Errorf("SetFreqA calls = %v, want last 14074030", a)
+	}
+	if len(b) == 0 || b[len(b)-1] != 7030030 {
+		t.Errorf("SetFreqB calls = %v, want last 7030030", b)
+	}
+}
+
+// TestTuneFlushSkippedAfterClose: a flush pending at Close sends nothing.
+func TestTuneFlushSkippedAfterClose(t *testing.T) {
+	r := &fakeRadio{freqA: 14074000}
+	e := New(r)
+	step := map[string]any{"step": float64(10)}
+	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1})
+	e.Handle(Event{Action: "vfo_tune", Opts: step, Value: 1}) // throttled; flush pending
+	e.Close()
+	time.Sleep(100 * time.Millisecond)
+	if _, _, sets := r.snapshot(); !equalInts(sets, []int{14074010}) {
+		t.Errorf("SetFreqA calls = %v, want [14074010] (no flush after Close)", sets)
 	}
 }
