@@ -90,6 +90,7 @@ type Winkeyer struct {
 	rttyBaudRate   int                // 0=45.45, 1=50, 2=75, 3=100 baud
 	rttyDoneCancel context.CancelFunc // cancels the pending ] goroutine (PTT off)
 	rttyPTTActive  bool               // TX; sent, RX; not yet sent
+	rttyAirEnd     time.Time          // when the K4 finishes sending the text handed to it so far
 
 	// Protocol trace (verbose logging)
 	trace bool
@@ -858,6 +859,8 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		w.rttyBuf = w.rttyBuf[:0]
 		w.rttyInBracket = true
 		if !w.rttyPTTActive {
+			// A fresh PTT session: text an abort cancelled isn't on the air.
+			w.rttyAirEnd = time.Time{}
 			w.cat.SetPTT(true)
 			w.rttyPTTActive = true
 		}
@@ -869,7 +872,16 @@ func (w *Winkeyer) handleRTTYChar(b byte) {
 		if w.rttyInBracket {
 			text := w.rttyTakeBuf()
 			w.rttyInBracket = false
-			txDelay := w.rttyTxDelay(len(text))
+			// A bracket that follows before the previous one's PTT release
+			// keeps the carrier up, and the K4 sends its text after what it
+			// still has queued. Time the release from the end of all of it,
+			// not just this bracket's text, or RX cuts off the tail.
+			start := time.Now()
+			if w.rttyPTTActive && w.rttyAirEnd.After(start) {
+				start = w.rttyAirEnd
+			}
+			w.rttyAirEnd = start.Add(w.rttyAirTime(text))
+			txDelay := time.Until(w.rttyAirEnd) + rttyTxPadding
 			if w.trace {
 				log.Printf("WK trace: RTTY ] → flush %q + PTT off (wait %v)", text, txDelay)
 			}
@@ -957,14 +969,49 @@ func (w *Winkeyer) rttyTakeBuf() string {
 	return text
 }
 
-// rttyTxDelay estimates how long the K4 needs to transmit n characters of RTTY.
-// Uses 9 bits per character to account for 7.5-bit Baudot frames (1 start +
-// 5 data + 1.5 stop) plus FIGS/LTRS shift characters that get inserted when
-// switching between letters and figures (callsigns with numbers, exchanges).
-// Adds 1 second padding for K4 internal buffering, EOT, and TX/RX switching.
-func (w *Winkeyer) rttyTxDelay(n int) time.Duration {
-	if n <= 0 {
-		return 500 * time.Millisecond
+// rttyTxPadding is added after the estimated air time before PTT is released,
+// for the K4's TX turn-on, its internal buffering, TX/RX switching, and
+// network jitter on a remote link.
+const rttyTxPadding = 1500 * time.Millisecond
+
+// rttyBaudotFigures are the characters on the Baudot FIGS shift.
+const rttyBaudotFigures = "0123456789-?:$!&#'()\"/;,."
+
+// rttyBaudotChars counts the Baudot characters the K4 sends for text: the text
+// itself plus a LTRS at the start and every FIGS/LTRS shift. It errs long:
+// with unshift-on-space a figure after a space needs FIGS again, and without
+// it a letter after figures needs LTRS even across a space, so it counts both.
+// Contest exchanges ("599 05 NH") are full of such shifts.
+func rttyBaudotChars(text string) int {
+	n := len(text) + 1 // leading LTRS
+	figs, afterSpace := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c == ' ' || c == '\r' || c == '\n':
+			afterSpace = true
+			continue
+		case strings.IndexByte(rttyBaudotFigures, c) >= 0:
+			if !figs || afterSpace {
+				n++
+			}
+			figs = true
+		default:
+			if figs {
+				n++
+			}
+			figs = false
+		}
+		afterSpace = false
+	}
+	return n
+}
+
+// rttyAirTime estimates how long the K4 needs to transmit text as RTTY: 7.5
+// bits per Baudot character (1 start + 5 data + 1.5 stop), shifts included.
+func (w *Winkeyer) rttyAirTime(text string) time.Duration {
+	if text == "" {
+		return 0
 	}
 	// Baud rates: 0=45.45, 1=50, 2=75, 3=100
 	baud := 45.45
@@ -976,8 +1023,8 @@ func (w *Winkeyer) rttyTxDelay(n int) time.Duration {
 	case 3:
 		baud = 100
 	}
-	msPerChar := 9000.0 / baud // ~9 bits accounts for shifts
-	return time.Duration(float64(n)*msPerChar+1000) * time.Millisecond
+	bits := 7.5 * float64(rttyBaudotChars(text))
+	return time.Duration(bits / baud * float64(time.Second))
 }
 
 // updateXoff recomputes XOFF from the characters sendLoop hasn't taken and
