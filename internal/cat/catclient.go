@@ -19,8 +19,9 @@ import (
 // CATClient manages a connection to a radio via Elecraft CAT protocol.
 // The transport can be TCP (K4, remote bridge) or serial (K3, etc).
 type CATClient struct {
-	mu        sync.Mutex
+	mu        sync.Mutex // guards transport; never held across I/O
 	transport io.ReadWriteCloser
+	writeMu   sync.Mutex // serializes writes to the transport
 	respCh    chan string
 	decodeCh  chan string // dedicated channel for TT (text decode) responses
 	queryMu   sync.Mutex  // serializes query transactions on respCh (drain, send, await)
@@ -112,12 +113,20 @@ func (c *CATClient) ConnectK4(addr, password string) error {
 	return nil
 }
 
+// catWriteTimeout bounds one CAT write on a transport that supports write
+// deadlines (TCP), so a radio link that stops reading fails the send instead
+// of blocking it forever.
+var catWriteTimeout = 2 * time.Second
+
+// Close closes the transport without waiting for writeMu, so a Send stuck on
+// a stalled link can't hang it; closing the transport fails that Send.
 func (c *CATClient) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.transport != nil {
-		c.transport.Close()
-		c.transport = nil
+	t := c.transport
+	c.transport = nil
+	c.mu.Unlock()
+	if t != nil {
+		t.Close()
 	}
 }
 
@@ -171,11 +180,17 @@ func SplitSemicolon(data []byte, atEOF bool) (advance int, token []byte, err err
 
 func (c *CATClient) Send(cmd string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.transport == nil {
+	t := c.transport
+	c.mu.Unlock()
+	if t == nil {
 		return fmt.Errorf("CAT: not connected")
 	}
-	_, err := fmt.Fprint(c.transport, cmd)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if d, ok := t.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		d.SetWriteDeadline(time.Now().Add(catWriteTimeout))
+	}
+	_, err := fmt.Fprint(t, cmd)
 	if err != nil {
 		log.Printf("CAT send error: %v", err)
 	}
