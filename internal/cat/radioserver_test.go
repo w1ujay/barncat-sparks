@@ -277,7 +277,7 @@ func TestRadioServerSetCommands(t *testing.T) {
 	}
 }
 
-func TestRadioServerDTNoOp(t *testing.T) {
+func TestRadioServerDTGoesToRaw(t *testing.T) {
 	mock := &mockRadio{freqA: 14060000}
 	srv := setupRadioServer(t, mock)
 	c := newTestClient(t, srv.Addr())
@@ -289,8 +289,8 @@ func TestRadioServerDTNoOp(t *testing.T) {
 	c.recv(t)
 
 	calls := mock.getCalls()
-	if len(calls) != 1 || calls[0] != "GetFreqA()" {
-		t.Errorf("DT2 should be no-op, got calls: %v", calls)
+	if len(calls) != 2 || calls[0] != "Raw(DT2)" || calls[1] != "GetFreqA()" {
+		t.Errorf("DT2 should go to Raw, got calls: %v", calls)
 	}
 }
 

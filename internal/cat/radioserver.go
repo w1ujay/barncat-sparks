@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -24,11 +25,12 @@ type RadioServer struct {
 	mu       sync.Mutex
 	clients  map[net.Conn]struct{}
 	done     chan struct{}
+	logRaw   bool // log every command passed to Radio.Raw
 
-	ampURL     string          // RF-Kit amp base URL (empty = no proxy)
-	httpMux    *http.ServeMux  // routes HTTP paths to handlers
-	httpServer *http.Server    // serves HTTP via chanListener
-	httpLn     *chanListener   // feeds HTTP connections to httpServer
+	ampURL     string         // RF-Kit amp base URL (empty = no proxy)
+	httpMux    *http.ServeMux // routes HTTP paths to handlers
+	httpServer *http.Server   // serves HTTP via chanListener
+	httpLn     *chanListener  // feeds HTTP connections to httpServer
 }
 
 // NewRadioServer creates a RadioServer listening on the given address.
@@ -48,6 +50,12 @@ func NewRadioServer(radio Radio, listenAddr string) (*RadioServer, error) {
 // Addr returns the listener's address (useful when using port 0 in tests).
 func (s *RadioServer) Addr() string {
 	return s.listener.Addr().String()
+}
+
+// SetLogRaw makes RadioServer log every command it passes to Radio.Raw, and
+// the reply, to find commands a radio needs a policy for. Call before Run.
+func (s *RadioServer) SetLogRaw(on bool) {
+	s.logRaw = on
 }
 
 // Handle registers an HTTP handler on the RadioServer's shared mux. On the
@@ -186,59 +194,95 @@ func (s *RadioServer) handleClient(conn net.Conn) {
 }
 
 // dispatch parses a single K4 CAT command (without trailing semicolon) and
-// calls the appropriate Radio method. Query responses are written to conn;
+// calls the appropriate Radio method. A form no typed handler implements goes
+// to Radio.Raw instead of being dropped. Query responses are written to conn;
 // a non-nil error means the client write failed and the connection should close.
 func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 	if len(cmd) < 2 {
 		return nil
 	}
+	handled, err := s.dispatchTyped(cmd, conn)
+	if handled || err != nil {
+		return err
+	}
+	return s.dispatchRaw(cmd, conn)
+}
 
+// dispatchRaw passes cmd to Radio.Raw and writes back any reply. An error
+// writes nothing: the client sees a missed poll, never an error as data.
+func (s *RadioServer) dispatchRaw(cmd string, conn net.Conn) error {
+	reply, err := s.radio.Raw(cmd)
+	if s.logRaw {
+		log.Printf("RadioServer: raw %s -> %q (err=%v)", cmd, reply, err)
+	}
+	if err != nil || reply == "" {
+		return nil
+	}
+	_, err = fmt.Fprintf(conn, "%s;", reply)
+	return err
+}
+
+// onOff parses the exact set forms XX0 and XX1. Anything else, such as a
+// bare or sub-receiver query (NB, NB$), is not a set.
+func onOff(cmd string) (on, ok bool) {
+	if len(cmd) != 3 || (cmd[2] != '0' && cmd[2] != '1') {
+		return false, false
+	}
+	return cmd[2] == '1', true
+}
+
+// dispatchTyped runs the typed handler for cmd. It reports false for any
+// form it doesn't implement, so dispatch passes that form to Raw.
+func (s *RadioServer) dispatchTyped(cmd string, conn net.Conn) (bool, error) {
 	switch cmd[:2] {
 	case "FA":
 		if len(cmd) == 2 {
 			hz, err := s.radio.GetFreqA()
 			if err != nil {
-				return nil
+				return true, nil
 			}
 			_, err = fmt.Fprintf(conn, "FA%011d;", hz)
-			return err
+			return true, err
 		}
 		hz, err := strconv.Atoi(cmd[2:])
-		if err == nil {
-			s.radio.SetFreqA(hz)
+		if err != nil {
+			return false, nil
 		}
+		s.radio.SetFreqA(hz)
 
 	case "FB":
 		if len(cmd) == 2 {
 			hz, err := s.radio.GetFreqB()
 			if err != nil {
-				return nil
+				return true, nil
 			}
 			_, err = fmt.Fprintf(conn, "FB%011d;", hz)
-			return err
+			return true, err
 		}
 		hz, err := strconv.Atoi(cmd[2:])
-		if err == nil {
-			s.radio.SetFreqB(hz)
+		if err != nil {
+			return false, nil
 		}
+		s.radio.SetFreqB(hz)
 
 	case "KS":
 		if len(cmd) == 2 {
 			wpm, err := s.radio.QuerySpeed()
 			if err != nil {
-				return nil
+				return true, nil
 			}
 			_, err = fmt.Fprintf(conn, "KS%03d;", wpm)
-			return err
+			return true, err
 		}
 		wpm, err := strconv.Atoi(cmd[2:])
-		if err == nil {
-			s.radio.SetSpeed(wpm)
+		if err != nil {
+			return false, nil
 		}
+		s.radio.SetSpeed(wpm)
 
 	case "KY":
 		if len(cmd) < 4 || cmd[2] != ' ' {
-			return nil
+			return false, nil
 		}
 		text := cmd[3:]
 		switch {
@@ -254,13 +298,16 @@ func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 		}
 
 	case "KZ":
-		if len(cmd) > 2 {
-			switch cmd[2] {
-			case '.':
-				s.radio.SendCWElement(true)
-			case '-':
-				s.radio.SendCWElement(false)
-			}
+		if len(cmd) < 3 {
+			return false, nil
+		}
+		switch cmd[2] {
+		case '.':
+			s.radio.SendCWElement(true)
+		case '-':
+			s.radio.SendCWElement(false)
+		default:
+			return false, nil
 		}
 
 	case "TX":
@@ -276,143 +323,157 @@ func (s *RadioServer) dispatch(cmd string, conn net.Conn) error {
 		s.radio.BandDown()
 
 	case "FT":
-		if len(cmd) > 2 {
-			n := int(cmd[2] - '0')
-			s.radio.SelectVFO(n)
+		if len(cmd) != 3 || (cmd[2] != '0' && cmd[2] != '1') {
+			return false, nil
 		}
+		s.radio.SelectVFO(int(cmd[2] - '0'))
 
 	case "SW":
-		if cmd == "SWT11" {
-			s.radio.SwapVFO()
+		if cmd != "SWT11" {
+			return false, nil
 		}
+		s.radio.SwapVFO()
 
 	case "AG":
-		if len(cmd) > 2 && cmd[2] == '$' {
-			level, err := strconv.Atoi(cmd[3:])
-			if err == nil {
-				s.radio.SetVolume(1, level)
-			}
-		} else if len(cmd) > 2 {
-			level, err := strconv.Atoi(cmd[2:])
-			if err == nil {
-				s.radio.SetVolume(0, level)
-			}
+		recv, digits := 0, cmd[2:]
+		if strings.HasPrefix(cmd, "AG$") {
+			recv, digits = 1, cmd[3:]
 		}
+		level, err := strconv.Atoi(digits)
+		if err != nil {
+			return false, nil
+		}
+		s.radio.SetVolume(recv, level)
 
 	case "RG":
-		if len(cmd) > 2 && cmd[2] == '$' {
-			if len(cmd) > 3 && cmd[3] == '/' {
-				s.radio.ToggleRFGain(1)
-			} else if len(cmd) > 3 && cmd[3] == '-' {
-				level, err := strconv.Atoi(cmd[4:])
-				if err == nil {
-					s.radio.SetRFGain(1, level)
-				}
-			}
-		} else if len(cmd) > 2 && cmd[2] == '/' {
+		switch {
+		case cmd == "RG$/":
+			s.radio.ToggleRFGain(1)
+		case cmd == "RG/":
 			s.radio.ToggleRFGain(0)
-		} else if len(cmd) > 2 && cmd[2] == '-' {
-			level, err := strconv.Atoi(cmd[3:])
-			if err == nil {
-				s.radio.SetRFGain(0, level)
+		case strings.HasPrefix(cmd, "RG$-"):
+			level, err := strconv.Atoi(cmd[4:])
+			if err != nil {
+				return false, nil
 			}
+			s.radio.SetRFGain(1, level)
+		case strings.HasPrefix(cmd, "RG-"):
+			level, err := strconv.Atoi(cmd[3:])
+			if err != nil {
+				return false, nil
+			}
+			s.radio.SetRFGain(0, level)
+		default:
+			return false, nil
 		}
 
 	case "PC":
-		if len(cmd) > 3 {
-			suffix := cmd[len(cmd)-1]
-			digits := cmd[2 : len(cmd)-1]
-			n, err := strconv.Atoi(digits)
-			if err == nil {
-				switch suffix {
-				case 'L':
-					s.radio.SetPower(n)
-				case 'H':
-					s.radio.SetPower(n * 10)
-				}
-			}
+		if len(cmd) <= 3 {
+			return false, nil
+		}
+		n, err := strconv.Atoi(cmd[2 : len(cmd)-1])
+		if err != nil {
+			return false, nil
+		}
+		switch cmd[len(cmd)-1] {
+		case 'L':
+			s.radio.SetPower(n)
+		case 'H':
+			s.radio.SetPower(n * 10)
+		default:
+			return false, nil
 		}
 
 	case "RT":
-		if len(cmd) > 2 {
-			s.radio.SetRIT(cmd[2] == '1')
+		on, ok := onOff(cmd)
+		if !ok {
+			return false, nil
 		}
+		s.radio.SetRIT(on)
 
 	case "RC":
 		s.radio.ClearRIT()
 
 	case "XT":
-		if len(cmd) > 2 {
-			s.radio.SetXIT(cmd[2] == '1')
+		on, ok := onOff(cmd)
+		if !ok {
+			return false, nil
 		}
+		s.radio.SetXIT(on)
 
 	case "NB":
-		if len(cmd) > 2 {
-			s.radio.SetNB(cmd[2] == '1')
+		on, ok := onOff(cmd)
+		if !ok {
+			return false, nil
 		}
+		s.radio.SetNB(on)
 
 	case "NR":
-		if len(cmd) > 2 {
-			s.radio.SetNR(cmd[2] == '1')
+		on, ok := onOff(cmd)
+		if !ok {
+			return false, nil
 		}
+		s.radio.SetNR(on)
 
 	case "BW":
-		if len(cmd) > 2 {
-			n, err := strconv.Atoi(cmd[2:])
-			if err == nil {
-				s.radio.SetFilterBW(n * 10)
-			}
+		n, err := strconv.Atoi(cmd[2:])
+		if err != nil {
+			return false, nil
 		}
+		s.radio.SetFilterBW(n * 10)
 
 	case "NM":
-		if len(cmd) == 3 {
-			s.radio.SetNotch(cmd[2] == '1')
-		} else if len(cmd) > 4 {
+		switch {
+		case cmd == "NM0" || cmd == "NM1":
+			s.radio.SetNotch(cmd == "NM1")
+		case len(cmd) > 4:
 			hz, err := strconv.Atoi(cmd[2 : len(cmd)-1])
-			if err == nil {
-				s.radio.SetNotchFreq(hz)
+			if err != nil {
+				return false, nil
 			}
+			s.radio.SetNotchFreq(hz)
+		default:
+			return false, nil
 		}
 
 	case "MD":
-		if len(cmd) == 2 {
+		switch cmd {
+		case "MD":
 			mode, err := s.radio.QueryMode()
 			if err != nil {
-				return nil
+				return true, nil
 			}
 			_, err = fmt.Fprintf(conn, "MD%d;", mode)
-			return err
-		}
-		switch cmd[2] {
-		case '3':
+			return true, err
+		case "MD3":
 			s.radio.SetCWMode()
-		case '6':
+		case "MD6":
 			s.radio.SetDataMode()
+		default:
+			return false, nil
 		}
-
-	case "DT":
-		// no-op — SetDataMode sends MD6+DT2 internally
 
 	case "TD":
-		if len(cmd) > 3 && cmd[2] == '$' {
-			s.radio.SetTextDecode(cmd[3] > '0')
+		if len(cmd) < 4 || cmd[2] != '$' || cmd[3] < '0' || cmd[3] > '9' {
+			return false, nil
 		}
+		s.radio.SetTextDecode(cmd[3] > '0')
 
 	case "TT":
-		if len(cmd) == 2 {
-			text, err := s.radio.QueryDecode()
-			if err != nil {
-				return nil
-			}
-			_, err = fmt.Fprintf(conn, "TT%02d%s;", len(text), text)
-			return err
+		if len(cmd) != 2 {
+			return false, nil
 		}
+		text, err := s.radio.QueryDecode()
+		if err != nil {
+			return true, nil
+		}
+		_, err = fmt.Fprintf(conn, "TT%02d%s;", len(text), text)
+		return true, err
 
 	default:
-		log.Printf("RadioServer: unrecognized command: %s", cmd)
+		return false, nil
 	}
-
-	return nil
+	return true, nil
 }
 
 // Close shuts down the RadioServer and disconnects all clients.
