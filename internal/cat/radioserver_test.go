@@ -18,6 +18,8 @@ type mockRadio struct {
 	speed  int
 	mode   int
 	decode string
+	raw    map[string]string
+	rawErr error
 }
 
 func (m *mockRadio) record(call string) {
@@ -40,44 +42,84 @@ func (m *mockRadio) reset() {
 	m.mu.Unlock()
 }
 
-func (m *mockRadio) Close()                              {}
-func (m *mockRadio) SendKY(text string) error            { m.record(fmt.Sprintf("SendKY(%s)", text)); return nil }
-func (m *mockRadio) SendAbort() error                    { m.record("SendAbort()"); return nil }
-func (m *mockRadio) SendCWMessage(text string) error     { m.record(fmt.Sprintf("SendCWMessage(%s)", text)); return nil }
-func (m *mockRadio) SendCWElement(dit bool) error        { m.record(fmt.Sprintf("SendCWElement(%v)", dit)); return nil }
-func (m *mockRadio) SetSpeed(wpm int) error              { m.record(fmt.Sprintf("SetSpeed(%d)", wpm)); return nil }
-func (m *mockRadio) QuerySpeed() (int, error)            { m.record("QuerySpeed()"); return m.speed, nil }
-func (m *mockRadio) SetPTT(on bool) error                { m.record(fmt.Sprintf("SetPTT(%v)", on)); return nil }
-func (m *mockRadio) SetFreqA(hz int) error               { m.record(fmt.Sprintf("SetFreqA(%d)", hz)); return nil }
-func (m *mockRadio) SetFreqB(hz int) error               { m.record(fmt.Sprintf("SetFreqB(%d)", hz)); return nil }
-func (m *mockRadio) GetFreqA() (int, error)              { m.record("GetFreqA()"); return m.freqA, nil }
-func (m *mockRadio) GetFreqB() (int, error)              { m.record("GetFreqB()"); return m.freqB, nil }
-func (m *mockRadio) SelectVFO(ab int) error              { m.record(fmt.Sprintf("SelectVFO(%d)", ab)); return nil }
-func (m *mockRadio) SwapVFO() error                      { m.record("SwapVFO()"); return nil }
-func (m *mockRadio) VFOAtoB() error                      { m.record("VFOAtoB()"); return nil }
-func (m *mockRadio) VFOBtoA() error                      { m.record("VFOBtoA()"); return nil }
-func (m *mockRadio) BandUp() error                       { m.record("BandUp()"); return nil }
-func (m *mockRadio) BandDown() error                     { m.record("BandDown()"); return nil }
-func (m *mockRadio) SetVolume(recv, level int) error     { m.record(fmt.Sprintf("SetVolume(%d,%d)", recv, level)); return nil }
-func (m *mockRadio) SetRFGain(recv, level int) error     { m.record(fmt.Sprintf("SetRFGain(%d,%d)", recv, level)); return nil }
-func (m *mockRadio) ToggleRFGain(recv int) error         { m.record(fmt.Sprintf("ToggleRFGain(%d)", recv)); return nil }
-func (m *mockRadio) SetPower(tenths int) error           { m.record(fmt.Sprintf("SetPower(%d)", tenths)); return nil }
-func (m *mockRadio) SetRIT(on bool) error                { m.record(fmt.Sprintf("SetRIT(%v)", on)); return nil }
-func (m *mockRadio) ClearRIT() error                     { m.record("ClearRIT()"); return nil }
-func (m *mockRadio) SetXIT(on bool) error                { m.record(fmt.Sprintf("SetXIT(%v)", on)); return nil }
-func (m *mockRadio) SetNB(on bool) error                 { m.record(fmt.Sprintf("SetNB(%v)", on)); return nil }
-func (m *mockRadio) SetNR(on bool) error                 { m.record(fmt.Sprintf("SetNR(%v)", on)); return nil }
-func (m *mockRadio) SetSplit(on bool) error              { m.record(fmt.Sprintf("SetSplit(%v)", on)); return nil }
-func (m *mockRadio) SetFilterBW(hz int) error            { m.record(fmt.Sprintf("SetFilterBW(%d)", hz)); return nil }
-func (m *mockRadio) SetNotch(on bool) error              { m.record(fmt.Sprintf("SetNotch(%v)", on)); return nil }
-func (m *mockRadio) SetNotchFreq(hz int) error           { m.record(fmt.Sprintf("SetNotchFreq(%d)", hz)); return nil }
-func (m *mockRadio) SetDataMode() error                  { m.record("SetDataMode()"); return nil }
-func (m *mockRadio) SetCWMode() error                    { m.record("SetCWMode()"); return nil }
-func (m *mockRadio) QueryMode() (int, error)             { m.record("QueryMode()"); return m.mode, nil }
-func (m *mockRadio) SendRTTYText(text string) error      { m.record(fmt.Sprintf("SendRTTYText(%s)", text)); return nil }
-func (m *mockRadio) SendRTTYEOT() error                  { m.record("SendRTTYEOT()"); return nil }
-func (m *mockRadio) SetTextDecode(on bool) error         { m.record(fmt.Sprintf("SetTextDecode(%v)", on)); return nil }
-func (m *mockRadio) QueryDecode() (string, error)        { m.record("QueryDecode()"); return m.decode, nil }
+func (m *mockRadio) Close()                   {}
+func (m *mockRadio) SendKY(text string) error { m.record(fmt.Sprintf("SendKY(%s)", text)); return nil }
+func (m *mockRadio) SendAbort() error         { m.record("SendAbort()"); return nil }
+func (m *mockRadio) SendCWMessage(text string) error {
+	m.record(fmt.Sprintf("SendCWMessage(%s)", text))
+	return nil
+}
+func (m *mockRadio) SendCWElement(dit bool) error {
+	m.record(fmt.Sprintf("SendCWElement(%v)", dit))
+	return nil
+}
+func (m *mockRadio) SetSpeed(wpm int) error   { m.record(fmt.Sprintf("SetSpeed(%d)", wpm)); return nil }
+func (m *mockRadio) QuerySpeed() (int, error) { m.record("QuerySpeed()"); return m.speed, nil }
+func (m *mockRadio) SetPTT(on bool) error     { m.record(fmt.Sprintf("SetPTT(%v)", on)); return nil }
+func (m *mockRadio) SetFreqA(hz int) error    { m.record(fmt.Sprintf("SetFreqA(%d)", hz)); return nil }
+func (m *mockRadio) SetFreqB(hz int) error    { m.record(fmt.Sprintf("SetFreqB(%d)", hz)); return nil }
+func (m *mockRadio) GetFreqA() (int, error)   { m.record("GetFreqA()"); return m.freqA, nil }
+func (m *mockRadio) GetFreqB() (int, error)   { m.record("GetFreqB()"); return m.freqB, nil }
+func (m *mockRadio) SelectVFO(ab int) error   { m.record(fmt.Sprintf("SelectVFO(%d)", ab)); return nil }
+func (m *mockRadio) SwapVFO() error           { m.record("SwapVFO()"); return nil }
+func (m *mockRadio) VFOAtoB() error           { m.record("VFOAtoB()"); return nil }
+func (m *mockRadio) VFOBtoA() error           { m.record("VFOBtoA()"); return nil }
+func (m *mockRadio) BandUp() error            { m.record("BandUp()"); return nil }
+func (m *mockRadio) BandDown() error          { m.record("BandDown()"); return nil }
+func (m *mockRadio) SetVolume(recv, level int) error {
+	m.record(fmt.Sprintf("SetVolume(%d,%d)", recv, level))
+	return nil
+}
+func (m *mockRadio) SetRFGain(recv, level int) error {
+	m.record(fmt.Sprintf("SetRFGain(%d,%d)", recv, level))
+	return nil
+}
+func (m *mockRadio) ToggleRFGain(recv int) error {
+	m.record(fmt.Sprintf("ToggleRFGain(%d)", recv))
+	return nil
+}
+func (m *mockRadio) SetPower(tenths int) error {
+	m.record(fmt.Sprintf("SetPower(%d)", tenths))
+	return nil
+}
+func (m *mockRadio) SetRIT(on bool) error   { m.record(fmt.Sprintf("SetRIT(%v)", on)); return nil }
+func (m *mockRadio) ClearRIT() error        { m.record("ClearRIT()"); return nil }
+func (m *mockRadio) SetXIT(on bool) error   { m.record(fmt.Sprintf("SetXIT(%v)", on)); return nil }
+func (m *mockRadio) SetNB(on bool) error    { m.record(fmt.Sprintf("SetNB(%v)", on)); return nil }
+func (m *mockRadio) SetNR(on bool) error    { m.record(fmt.Sprintf("SetNR(%v)", on)); return nil }
+func (m *mockRadio) SetSplit(on bool) error { m.record(fmt.Sprintf("SetSplit(%v)", on)); return nil }
+func (m *mockRadio) SetFilterBW(hz int) error {
+	m.record(fmt.Sprintf("SetFilterBW(%d)", hz))
+	return nil
+}
+func (m *mockRadio) SetNotch(on bool) error { m.record(fmt.Sprintf("SetNotch(%v)", on)); return nil }
+func (m *mockRadio) SetNotchFreq(hz int) error {
+	m.record(fmt.Sprintf("SetNotchFreq(%d)", hz))
+	return nil
+}
+func (m *mockRadio) SetDataMode() error      { m.record("SetDataMode()"); return nil }
+func (m *mockRadio) SetCWMode() error        { m.record("SetCWMode()"); return nil }
+func (m *mockRadio) QueryMode() (int, error) { m.record("QueryMode()"); return m.mode, nil }
+func (m *mockRadio) SendRTTYText(text string) error {
+	m.record(fmt.Sprintf("SendRTTYText(%s)", text))
+	return nil
+}
+func (m *mockRadio) SendRTTYEOT() error { m.record("SendRTTYEOT()"); return nil }
+func (m *mockRadio) SetTextDecode(on bool) error {
+	m.record(fmt.Sprintf("SetTextDecode(%v)", on))
+	return nil
+}
+func (m *mockRadio) QueryDecode() (string, error) { m.record("QueryDecode()"); return m.decode, nil }
+
+func (m *mockRadio) Raw(cmd string) (string, error) {
+	m.record(fmt.Sprintf("Raw(%s)", cmd))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rawErr != nil {
+		return "", m.rawErr
+	}
+	return m.raw[cmd], nil
+}
 
 // Compile-time check: *mockRadio implements Radio.
 var _ Radio = (*mockRadio)(nil)

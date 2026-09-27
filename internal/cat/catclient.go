@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,8 +24,10 @@ type CATClient struct {
 	transport io.ReadWriteCloser
 	writeMu   sync.Mutex // serializes writes to the transport
 	respCh    chan string
-	decodeCh  chan string // dedicated channel for TT (text decode) responses
-	queryMu   sync.Mutex  // serializes query transactions on respCh (drain, send, await)
+	decodeCh  chan string   // dedicated channel for TT (text decode) responses
+	queryMu   sync.Mutex    // serializes query transactions on respCh (drain, send, await)
+	done      chan struct{} // closed when readLoop returns
+	doneOnce  sync.Once
 
 	// Response relays — every response is queued to each relay's own writer
 	// goroutine (used by CATServer to forward responses to TCP clients); see relay.go.
@@ -37,6 +40,7 @@ func NewCATClient() *CATClient {
 	return &CATClient{
 		respCh:   make(chan string, 8),
 		decodeCh: make(chan string, 8),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -131,6 +135,7 @@ func (c *CATClient) Close() {
 }
 
 func (c *CATClient) readLoop() {
+	defer c.doneOnce.Do(func() { close(c.done) })
 	c.mu.Lock()
 	t := c.transport
 	c.mu.Unlock()
@@ -265,6 +270,87 @@ func (c *CATClient) query(cmd, prefix string) (string, error) {
 			return "", fmt.Errorf("%s query timeout", prefix)
 		}
 	}
+}
+
+// ErrRadioRejected is returned when the radio answers a query with "?;"
+// (busy, or a command it doesn't know).
+var ErrRadioRejected = errors.New("CAT: radio rejected the command")
+
+// ErrQueryTimeout is wrapped by Raw when no matching reply arrives in time.
+var ErrQueryTimeout = errors.New("query timeout")
+
+// rawQueryTimeout bounds one Raw query.
+var rawQueryTimeout = 500 * time.Millisecond
+
+// bareSets are commands with no data that are sets, not queries: the radio
+// never answers them, so waiting for a reply would only time out.
+var bareSets = map[string]bool{"TX": true, "RX": true, "RC": true, "BU": true, "BD": true, "UP": true, "DN": true}
+
+// bareMetaQueries are the meta-mode GETs, whose names end in a digit.
+var bareMetaQueries = map[string]bool{"K2": true, "K3": true, "K4": true}
+
+// isBareQuery reports whether cmd is a GET: two upper-case letters (other
+// than the data-less sets), optionally followed by '$' (the sub-receiver
+// form), or a meta-mode query (K2, K3, K4).
+func isBareQuery(cmd string) bool {
+	upper := func(b byte) bool { return b >= 'A' && b <= 'Z' }
+	switch len(cmd) {
+	case 2:
+		return bareMetaQueries[cmd] || (upper(cmd[0]) && upper(cmd[1]) && !bareSets[cmd])
+	case 3:
+		return upper(cmd[0]) && upper(cmd[1]) && cmd[2] == '$'
+	}
+	return false
+}
+
+// Raw sends one CAT command (without its trailing semicolon) as-is. A bare
+// query waits for the reply whose prefix is cmd and returns it without the
+// semicolon; any other command is a set and returns "".
+func (c *CATClient) Raw(cmd string) (string, error) {
+	if !isBareQuery(cmd) {
+		return "", c.Send(cmd + ";")
+	}
+	return c.rawQuery(cmd)
+}
+
+// rawQuery sends cmd and waits for the reply whose prefix is cmd, whatever
+// isBareQuery says about it. It holds queryMu for the whole drain → send →
+// await transaction, like query.
+func (c *CATClient) rawQuery(cmd string) (string, error) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	c.drainResponses()
+	if err := c.Send(cmd + ";"); err != nil {
+		return "", err
+	}
+	// "?;" names no command: it may be a late rejection of an earlier
+	// passed-through set. Note it and keep waiting for a matching reply; only
+	// a deadline with no match turns it into ErrRadioRejected.
+	rejected := false
+	timeout := time.After(rawQueryTimeout)
+	for {
+		select {
+		case resp := <-c.respCh:
+			if resp == "?" {
+				rejected = true
+				continue
+			}
+			if strings.HasPrefix(resp, cmd) {
+				return resp, nil
+			}
+		case <-timeout:
+			if rejected {
+				return "", ErrRadioRejected
+			}
+			return "", fmt.Errorf("%s: %w", cmd, ErrQueryTimeout)
+		}
+	}
+}
+
+// Done returns a channel that is closed when the link to the radio ends
+// (the read loop saw an error or EOF).
+func (c *CATClient) Done() <-chan struct{} {
+	return c.done
 }
 
 // QuerySpeed queries the current keyer speed from the K4.
