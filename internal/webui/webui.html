@@ -78,6 +78,7 @@ a{color:#569cd6}
 .station-row{display:grid;grid-template-columns:130px 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
 .station-label{font-size:0.85em;color:#9cdcfe;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .station-value{font-size:0.9em}
+.station-value.warn{color:#d7ba7d}
 .station-source{font-size:0.85em;color:#888;margin:8px 0}
 .station-source.live{color:#4ec9b0}
 .station-source.warn{color:#d7ba7d}
@@ -119,6 +120,10 @@ a{color:#569cd6}
     <span class="station-label">Power-save</span>
     <span class="station-value" id="psState">—</span>
     <button id="psBtn" onclick="togglePowerSave()" disabled>Arm</button>
+  </div>
+  <div class="station-row" id="battRow" hidden>
+    <span class="station-label">Battery</span>
+    <span class="station-value" id="battState">—</span>
   </div>
   <div id="laptopRows"></div>
   <div class="station-note" id="stationMsg"></div>
@@ -870,6 +875,7 @@ function resetStationView() {
   src.textContent = '—';
   document.getElementById('k4State').textContent = '—';
   document.getElementById('psState').textContent = '—';
+  renderBattery(null, 0);
   const id = document.getElementById('hearthIdentity');
   id.className = 'station-note';
   id.textContent = '';
@@ -1013,6 +1019,30 @@ function describePowerSave(ps) {
   return t;
 }
 
+// describeBattery is the Battery row's text, e.g. "87% · charging +120 W".
+// pushAge is added to a stale reading's age on the replica, whose blob was
+// pushed that long ago.
+function describeBattery(b, pushAge) {
+  if (b.reported === false) return 'no reading';
+  let t = Math.round(b.soc) + '%';
+  if (b.stale) return t + ' · stale (' + fmtAge((b.age_sec || 0) + pushAge) + ')';
+  const w = Math.round(Math.abs(b.power_w || 0));
+  if (b.status === 'charging') t += ' · charging +' + w + ' W';
+  else if (b.status === 'discharging') t += ' · discharging \u2212' + w + ' W';
+  else if (b.status) t += ' · ' + b.status;
+  return t;
+}
+
+// renderBattery shows the main battery, or hides the row when hearth sends
+// no battery block (the site has none configured).
+function renderBattery(b, pushAge) {
+  const row = document.getElementById('battRow');
+  const val = document.getElementById('battState');
+  row.hidden = !b;
+  val.className = 'station-value' + (b && (b.stale || b.reported === false) ? ' warn' : '');
+  val.textContent = b ? describeBattery(b, pushAge) : '—';
+}
+
 function renderHearthStatus() {
   const s = hearthStatus;
   if (!s) return;
@@ -1034,6 +1064,7 @@ function renderHearthStatus() {
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
   document.getElementById('psState').textContent = describePowerSave(s.powersave);
+  renderBattery(s.battery, s.source === 'replica' ? (s.push_age_sec || 0) : 0);
   if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
     const gen = hearthGen;
     hearthIdentityFetchGen = gen;

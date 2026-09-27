@@ -61,7 +61,8 @@ func TestHearthStatusFromPi(t *testing.T) {
 	pi := fakeHearthServer(t, map[string]http.HandlerFunc{
 		"GET /api/status": func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"k4":{"card_state":"on","power_relay":"k4_power","freq_hz":7030000,"mode":"CW"}}`)
+			io.WriteString(w, `{"k4":{"card_state":"on","power_relay":"k4_power","freq_hz":7030000,"mode":"CW"},
+				"battery":{"soc":87,"power_w":120,"status":"charging","stale":false,"age_sec":3}}`)
 		},
 	})
 	w := hearthWebUI(&config.AppConfig{HearthURL: pi.URL})
@@ -69,6 +70,10 @@ func TestHearthStatusFromPi(t *testing.T) {
 	k4, _ := out["k4"].(map[string]any)
 	if out["source"] != "pi" || k4["card_state"] != "on" || k4["freq_hz"] != float64(7030000) {
 		t.Errorf("response = %v", out)
+	}
+	batt, _ := out["battery"].(map[string]any)
+	if batt["soc"] != float64(87) || batt["status"] != "charging" || batt["reported"] != true {
+		t.Errorf("battery = %v", out["battery"])
 	}
 }
 
@@ -288,7 +293,7 @@ func TestIndexWiresStation(t *testing.T) {
 		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
 		`id="operateView"`, `id="settingsView"`, `id="stationHint"`, `id="saveMsg"`, `showTab(`,
 		`id="laptopRows"`, `'/api/hearth/wol'`, `canUseHearth('wol')`,
-		`lastHearthKey`,
+		`lastHearthKey`, `id="battRow"`, `id="battState"`, `describeBattery(`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("webui.html missing %s", want)
