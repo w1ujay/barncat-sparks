@@ -1011,6 +1011,13 @@ function psHeld(ps) {
   return !!(ps && ps.enabled && ps.armed && ps.held_by);
 }
 
+// psPending says whether the replica holds an arm or disarm the cabin hasn't
+// applied yet. The replica keeps desired as standing state and rewrites it to
+// the Pi's own state once they agree, so a desired matching armed is not queued.
+function psPending(ps) {
+  return !!(ps && (ps.desired === 'on' || ps.desired === 'off') && ps.desired !== (ps.armed ? 'on' : 'off'));
+}
+
 // describePowerSave is the Power-save row's text. While a rig holds the dish
 // up there is no "down until" countdown: the link stays up. pushAgeSec is the
 // replica's push age (0 from the Pi); a hold older than 120 s is only as
@@ -1025,7 +1032,7 @@ function describePowerSave(ps, pushAgeSec) {
   }
   else if (ps.phase === 'down' && ps.next_up_at) t = 'armed · down until ' + fmtClock(ps.next_up_at);
   else t = 'armed · ' + (ps.phase || 'up');
-  if (ps.desired) {
+  if (psPending(ps)) {
     t += ' · ' + (ps.desired === 'on' ? 'arm' : 'disarm') + ' queued';
     if (ps.desired_by) t += ' by ' + ps.desired_by;
     if (ps.desired_at) t += ' ' + fmtAge(ageSec(ps.desired_at)) + ' ago';
@@ -1095,6 +1102,7 @@ function renderHearthStatus() {
     src.textContent = 'Unreachable — ' + (s.error || 'no response');
   }
   document.getElementById('k4State').textContent = s.k4 ? describeK4(s.k4) : '—';
+  endK4PowerOnWait(s.k4);
   renderPowerSave(s.powersave, s.source === 'replica' ? (s.push_age_sec || 0) : 0);
   renderBattery(s.battery, s.source === 'replica');
   if (!hearthIdentity && s.source !== 'unreachable' && hearthIdentityFetchGen !== hearthGen) {
@@ -1111,6 +1119,11 @@ function renderHearthStatus() {
     fetchWol(); // first Pi status for this station
   }
   renderHearthControls();
+}
+
+// endK4PowerOnWait clears the pulse-power message once the K4 reads on.
+function endK4PowerOnWait(k4) {
+  if (k4PowerOnWait && k4 && k4.card_state === 'on') setStationMsg('', false);
 }
 
 // effectiveArmed is the power-save state the station is heading for. On the
@@ -1177,7 +1190,12 @@ function renderHearthControls() {
   renderLaptopRows();
 }
 
+// k4PowerOnWait is true while stationMsg shows the pulse-power message, which
+// clears once the K4 reads on. Any other message ends the wait.
+let k4PowerOnWait = false;
+
 function setStationMsg(text, isError) {
+  k4PowerOnWait = false;
   const el = document.getElementById('stationMsg');
   el.className = 'station-note' + (isError ? ' error' : '');
   el.textContent = text;
@@ -1216,27 +1234,35 @@ async function k4Power(power) {
   const res = await hearthPost('/api/hearth/k4', {power: power});
   if (res && res.ok) {
     setStationMsg(power === 'on' ? 'Pulsed power — waiting for the rig to come up' : 'Power-off sent', false);
+    k4PowerOnWait = power === 'on';
   }
   pollHearth();
 }
 
-async function togglePowerSave() {
-  const s = hearthStatus;
+// armConfirmText is the question asked before arming. In a down phase with
+// the K4 reading on, hearth holds the dish up while the K4 stays on, so the
+// link doesn't drop until the K4 goes off.
+function armConfirmText(s) {
   const ps = s && s.powersave;
   const onReplica = !!s && s.source === 'replica';
-  const arm = !effectiveArmed(s);
-  if (arm) {
-    let msg;
-    if (onReplica && ps && ps.armed) {
-      msg = 'Replace the queued disarm with arm? The cabin stays in power-save when it next checks in.';
-    } else if (onReplica) {
-      msg = 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.';
-    } else {
-      const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
-      msg = 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
-    }
-    if (!confirm(msg)) return;
+  if (onReplica && ps && ps.armed) {
+    return 'Replace the queued disarm with arm? The cabin stays in power-save when it next checks in.';
   }
+  if (onReplica) {
+    return 'Queue arm? When the cabin next checks in, power-save arms and the dish drops.';
+  }
+  const until = ps && ps.next_up_at ? fmtClock(ps.next_up_at) : 'the next window';
+  if (ps && ps.phase === 'down' && s.k4 && s.k4.card_state === 'on') {
+    return 'Arm power-save? The K4 is on, so the dish stays up while it reads on. ' +
+      'Once the K4 goes off, the dish drops and this link to the cabin is gone until ' + until + '.';
+  }
+  return 'Arm power-save? The dish drops IMMEDIATELY and this link to the cabin — including the K4 — is gone until ' + until + '.';
+}
+
+async function togglePowerSave() {
+  const s = hearthStatus;
+  const arm = !effectiveArmed(s);
+  if (arm && !confirm(armConfirmText(s))) return;
   const res = await hearthPost('/api/hearth/powersave', {armed: arm});
   if (res && res.ok) {
     setStationMsg(res.queued

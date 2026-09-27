@@ -101,6 +101,15 @@ console.log(JSON.stringify(cases.map(c => {
 		{name: "held_by empty", ps: `{"enabled":true,"armed":true,"phase":"up","held_by":""}`, text: "armed · up"},
 		{name: "disarmed", ps: `{"enabled":true,"armed":false,"phase":"up"}`, text: "disarmed"},
 		{name: "no block", ps: `null`, text: "—"},
+		// The replica rewrites desired to the Pi's own state once they agree:
+		// a desired matching armed is not queued.
+		{name: "replica desired matches armed", ps: `{"enabled":true,"armed":true,"phase":"down","held_by":"k4",
+			"desired":"on","desired_at":"2026-09-27T19:37:13Z"}`, age: 41,
+			text: "armed · held up: K4 on", amber: true},
+		{name: "replica desired matches disarmed", ps: `{"enabled":true,"armed":false,"phase":"down","desired":"off"}`,
+			text: "disarmed"},
+		{name: "replica disarm pending", ps: `{"enabled":true,"armed":true,"phase":"up","desired":"off","desired_by":"K1ABC"}`,
+			text: "armed · up · disarm queued by K1ABC"},
 	}
 	type jsCase struct {
 		PS  json.RawMessage `json:"ps"`
@@ -110,7 +119,7 @@ console.log(JSON.stringify(cases.map(c => {
 	for i, c := range cases {
 		in[i] = jsCase{PS: json.RawMessage(c.ps), Age: c.age}
 	}
-	out := runJS(t, []string{"fmtAge", "ageSec", "fmtClock", "psHeld", "describePowerSave", "renderPowerSave"}, body, in)
+	out := runJS(t, []string{"fmtAge", "ageSec", "fmtClock", "psHeld", "psPending", "describePowerSave", "renderPowerSave"}, body, in)
 	var got []struct {
 		Text  string `json:"text"`
 		Class string `json:"class"`
@@ -180,6 +189,76 @@ console.log(JSON.stringify(cases.map(describeReplicaSource)));
 		}
 		if !c.dark && strings.Contains(got[i], "next window") {
 			t.Errorf("%s: line = %q, want no next-window time while held", c.name, got[i])
+		}
+	}
+}
+
+// TestArmConfirmText checks the question asked before arming: with the K4
+// reading on in a down phase, hearth holds the dish up, so it must not say
+// the link drops immediately.
+func TestArmConfirmText(t *testing.T) {
+	const body = `
+const cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(JSON.stringify(cases.map(armConfirmText)));
+`
+	cases := []struct {
+		name, status, want, notWant string
+	}{
+		{name: "K4 on, down phase", status: `{"source":"pi","k4":{"card_state":"on"},
+			"powersave":{"enabled":true,"armed":false,"phase":"down","next_up_at":"2026-09-27T20:00:00Z"}}`,
+			want: "The K4 is on, so the dish stays up while it reads on.", notWant: "IMMEDIATELY"},
+		{name: "K4 off, down phase", status: `{"source":"pi","k4":{"card_state":"unreachable"},
+			"powersave":{"enabled":true,"armed":false,"phase":"down","next_up_at":"2026-09-27T20:00:00Z"}}`,
+			want: "The dish drops IMMEDIATELY", notWant: "stays up"},
+		{name: "no K4 block", status: `{"source":"pi","powersave":{"enabled":true,"armed":false,"phase":"down"}}`,
+			want: "gone until the next window."},
+		{name: "replica", status: `{"source":"replica","k4":{"card_state":"on"},"powersave":{"enabled":true,"armed":false}}`,
+			want: "Queue arm?"},
+	}
+	in := make([]json.RawMessage, len(cases))
+	for i, c := range cases {
+		in[i] = json.RawMessage(c.status)
+	}
+	out := runJS(t, []string{"fmtClock", "armConfirmText"}, body, in)
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	for i, c := range cases {
+		if !strings.Contains(got[i], c.want) {
+			t.Errorf("%s: text = %q, want it to contain %q", c.name, got[i], c.want)
+		}
+		if c.notWant != "" && strings.Contains(got[i], c.notWant) {
+			t.Errorf("%s: text = %q, must not contain %q", c.name, got[i], c.notWant)
+		}
+	}
+}
+
+// TestK4PowerOnWaitClears checks that the pulse-power message clears once the
+// K4 reads on, stays while it doesn't, and that another message isn't cleared.
+func TestK4PowerOnWaitClears(t *testing.T) {
+	const body = `
+const el = {className: '', textContent: ''};
+const document = {getElementById: () => el};
+const out = [];
+function pulse() { setStationMsg('Pulsed power — waiting for the rig to come up', false); k4PowerOnWait = true; }
+pulse();
+endK4PowerOnWait({card_state: 'unreachable'}); out.push(el.textContent);
+endK4PowerOnWait({card_state: 'on'});          out.push(el.textContent);
+pulse(); setStationMsg('Power-save armed', false);
+endK4PowerOnWait({card_state: 'on'});          out.push(el.textContent);
+console.log(JSON.stringify(out));
+`
+	src := "let k4PowerOnWait = false;\n"
+	out := runJS(t, []string{"setStationMsg", "endK4PowerOnWait"}, src+body, nil)
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	want := []string{"Pulsed power — waiting for the rig to come up", "", "Power-save armed"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("step %d: message = %q, want %q", i, got[i], want[i])
 		}
 	}
 }
