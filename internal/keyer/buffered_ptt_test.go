@@ -77,3 +77,34 @@ func TestReadFailureReleasesTune(t *testing.T) {
 	expectCmdTimeout(t, cmds, "RX", 500*time.Millisecond)
 	<-ran
 }
+
+// TestCloseWaitsForReadFailureRelease: Close must not return while Run's
+// read-failure release is still unsent, or the caller closes CAT under it.
+func TestCloseWaitsForReadFailureRelease(t *testing.T) {
+	wk, tp, cmds := newTestWK(t)
+	port := &eofPort{testPort: tp, eof: make(chan struct{})}
+	wk.port = port
+
+	wk.processByte(0x0B) // key immediate
+	wk.processByte(0x01) // tune on
+	expectCmd(t, cmds, "TX")
+
+	wk.sendMu.Lock() // park Run's release inside sendStop
+	ran := make(chan struct{})
+	go func() { wk.Run(); close(ran) }()
+	close(port.eof)
+	time.Sleep(50 * time.Millisecond) // Run has cleared tuning and waits on sendMu
+
+	closed := make(chan struct{})
+	go func() { wk.Close(); close(closed) }()
+	select {
+	case <-closed:
+		wk.sendMu.Unlock()
+		t.Fatal("Close returned before the read-failure release was sent")
+	case <-time.After(100 * time.Millisecond):
+	}
+	wk.sendMu.Unlock()
+	expectCmdTimeout(t, cmds, "RX", 500*time.Millisecond)
+	<-closed
+	<-ran
+}

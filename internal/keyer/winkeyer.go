@@ -173,16 +173,15 @@ func (w *Winkeyer) Run() {
 		n, err := w.port.Read(buf)
 		if err != nil {
 			w.mu.Lock()
-			closed := w.closed
-			var stop keyingStop
-			if !closed {
-				stop, _ = w.stopKeyingLocked()
+			if !w.closed {
+				log.Printf("WK: serial read error: %v", err)
+				stop, _ := w.stopKeyingLocked()
+				// Sent under mu, like the other stop paths, so a concurrent
+				// Close waits for it rather than returning (and letting the
+				// caller close CAT) before the release is written.
+				w.sendStop(stop) // mu is held; that's fine, see stopKeyingLocked
 			}
 			w.mu.Unlock()
-			if !closed {
-				log.Printf("WK: serial read error: %v", err)
-				w.sendStop(stop)
-			}
 			return
 		}
 		if n == 1 {
