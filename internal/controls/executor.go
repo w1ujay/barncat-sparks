@@ -5,6 +5,7 @@
 package controls
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -106,10 +107,17 @@ func (e *Executor) Handle(ev Event) {
 // the radio if a PTT is held, because that control's release can never arrive.
 // The executor stays open, so PTT keys again once the device is back.
 func (e *Executor) DeviceLost(name string) {
+	e.ReleasePTT(fmt.Sprintf("device %q disconnected", name))
+}
+
+// ReleasePTT unkeys the radio if a PTT is held, for an input that may have
+// lost the release (a disconnect, or dropped events). Unlike Close, the
+// executor stays open.
+func (e *Executor) ReleasePTT(reason string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.pttOn {
-		log.Printf("controls: releasing PTT, device %q disconnected", name)
+		log.Printf("controls: releasing PTT, %s", reason)
 		e.pttOn = false
 		e.cat.SetPTT(false)
 	}
