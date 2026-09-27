@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Operate tab Station panel shows the main battery from hearth — charge level plus charging/discharging power (e.g. "87% · charging +120 W"), marked stale when the reading is old, and hidden when the site has no battery
+
 ### Fixed
 - RTTY messages no longer lose their last word — PTT is held until all queued text is on the air, counting FIGS/LTRS shifts plus a 1.5 s pad, so a bracket sent while the previous one is still transmitting no longer drops to RX early
 

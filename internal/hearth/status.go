@@ -2,6 +2,7 @@ package hearth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -43,12 +44,36 @@ type PowerSave struct {
 	SilentSec          int       `json:"silent_sec,omitempty"`
 }
 
+// Battery is the battery block of /api/status: the site's governing (main)
+// pack. Hearth omits the block when the site has no battery configured.
+type Battery struct {
+	SoC      float64 `json:"soc"`     // percent
+	PowerW   float64 `json:"power_w"` // + charging, − discharging
+	Status   string  `json:"status"`  // charging | discharging | idle
+	Stale    bool    `json:"stale"`
+	AgeSec   int64   `json:"age_sec"`
+	Reported bool    `json:"reported"` // false: the pack has never reported
+}
+
+// UnmarshalJSON treats an absent "reported" as true, as hearth documents: an
+// older Pi omits the key, and that is not a pack that never reported.
+func (b *Battery) UnmarshalJSON(data []byte) error {
+	type plain Battery
+	p := plain{Reported: true}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*b = Battery(p)
+	return nil
+}
+
 // Status is what the Station panel shows.
 type Status struct {
 	Source     Source     `json:"source"`
 	PushAgeSec int        `json:"push_age_sec,omitempty"` // replica only
 	K4         *K4        `json:"k4,omitempty"`
 	PowerSave  *PowerSave `json:"powersave,omitempty"`
+	Battery    *Battery   `json:"battery,omitempty"`
 	Err        string     `json:"error,omitempty"`
 }
 
@@ -58,6 +83,7 @@ type statusBlob struct {
 	AwaitingFirstPush bool       `json:"awaiting_first_push"`
 	K4                *K4        `json:"k4"`
 	PowerSave         *PowerSave `json:"powersave"`
+	Battery           *Battery   `json:"battery"`
 }
 
 // Status reads K4 and power-save state from the Pi, or from the replica's
@@ -70,7 +96,7 @@ func (c *Client) Status(ctx context.Context) Status {
 	var blob statusBlob
 	err := c.do(ctx, c.PiURL, http.MethodGet, c.sitePath("/api/status"), nil, &blob, piTimeout)
 	if err == nil {
-		return Status{Source: SourcePi, K4: blob.K4, PowerSave: blob.PowerSave}
+		return Status{Source: SourcePi, K4: blob.K4, PowerSave: blob.PowerSave, Battery: blob.Battery}
 	}
 	if !isTransport(err) || c.ReplicaURL == "" {
 		return Status{Source: SourceUnreachable, Err: err.Error()}
@@ -101,7 +127,7 @@ func (c *Client) replicaStatus(ctx context.Context, piErr error) Status {
 	if blobErr != nil {
 		return Status{Source: SourceUnreachable, Err: fmt.Sprintf("pi unreachable (%v); replica: %v", piErr, blobErr)}
 	}
-	st := Status{Source: SourceReplica, PushAgeSec: blob.PushAgeSec, K4: blob.K4, PowerSave: blob.PowerSave}
+	st := Status{Source: SourceReplica, PushAgeSec: blob.PushAgeSec, K4: blob.K4, PowerSave: blob.PowerSave, Battery: blob.Battery}
 	if blob.AwaitingFirstPush {
 		st.Err = "the replica has not heard from the cabin yet"
 	}
