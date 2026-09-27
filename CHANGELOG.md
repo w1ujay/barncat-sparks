@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Operate tab Station panel shows the main battery from hearth — charge level plus charging/discharging power (e.g. "87% · charging +120 W"), marked stale when the reading is old, and hidden when the site has no battery
+
 ### Fixed
 - Stop, clear buffer and a logger disconnect now release PTT keyed by WinKeyer buffered PTT (0x18), and a logger serial port that fails mid-tune or mid-RTTY-bracket unkeys the radio instead of leaving it transmitting
 - A MIDI jog spun while the radio is slow to answer can no longer crowd out a PTT release or a controller disconnect — only jog/knob steps are dropped when events back up, and PTT is released if anything else ever is
