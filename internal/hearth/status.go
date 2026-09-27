@@ -50,8 +50,8 @@ type Battery struct {
 	SoC      float64 `json:"soc"`     // percent
 	PowerW   float64 `json:"power_w"` // + charging, − discharging
 	Status   string  `json:"status"`  // charging | discharging | idle
-	Stale    bool    `json:"stale"`
-	AgeSec   int64   `json:"age_sec"`
+	Stale    bool    `json:"stale"` // as hearth judged it; not updated on the replica
+	AgeSec   int64   `json:"age_sec"` // reading's age now, replica push age included
 	Reported bool    `json:"reported"` // false: the pack has never reported
 }
 
@@ -128,6 +128,11 @@ func (c *Client) replicaStatus(ctx context.Context, piErr error) Status {
 		return Status{Source: SourceUnreachable, Err: fmt.Sprintf("pi unreachable (%v); replica: %v", piErr, blobErr)}
 	}
 	st := Status{Source: SourceReplica, PushAgeSec: blob.PushAgeSec, K4: blob.K4, PowerSave: blob.PowerSave, Battery: blob.Battery}
+	if st.Battery != nil {
+		// The replica serves the blob as pushed, so the reading has aged by
+		// the push's age on top of its age at push time.
+		st.Battery.AgeSec += int64(blob.PushAgeSec)
+	}
 	if blob.AwaitingFirstPush {
 		st.Err = "the replica has not heard from the cabin yet"
 	}

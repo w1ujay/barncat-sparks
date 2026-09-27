@@ -76,8 +76,25 @@ func TestStatusFallsBackToReplica(t *testing.T) {
 		t.Errorf("replica fields not merged: %+v", ps)
 	}
 	// An older Pi omits "reported"; absent means reported, not a dead pack.
-	if b := st.Battery; b == nil || b.SoC != 64 || b.PowerW != -45.5 || b.Status != "discharging" || !b.Stale || b.AgeSec != 2530 || !b.Reported {
+	if b := st.Battery; b == nil || b.SoC != 64 || b.PowerW != -45.5 || b.Status != "discharging" || !b.Stale || b.AgeSec != 2530+2520 || !b.Reported {
 		t.Errorf("battery = %+v, want the pushed block with reported defaulting to true", st.Battery)
+	}
+}
+
+// A reading that was fresh when pushed keeps aging while the cabin is dark:
+// the replica leaves the pushed age and stale flag as they were.
+func TestStatusReplicaBatteryAgesWithPush(t *testing.T) {
+	replica := newFakeHearth(t, map[string]http.HandlerFunc{
+		"GET /api/status": jsonReply(`{"push_age_sec":7200,
+			"battery":{"soc":87,"power_w":120,"status":"charging","stale":false,"age_sec":4}}`),
+		"GET /api/powersave": jsonReply(replicaPowerSaveJSON),
+	})
+	st := (&Client{PiURL: deadURL(t), ReplicaURL: replica.URL}).Status(context.Background())
+	if st.Source != SourceReplica {
+		t.Fatalf("source = %q (err %q), want replica", st.Source, st.Err)
+	}
+	if b := st.Battery; b == nil || b.AgeSec != 7204 {
+		t.Errorf("battery = %+v, want age_sec 7204 (pushed age + push age)", st.Battery)
 	}
 }
 
