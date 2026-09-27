@@ -1040,6 +1040,19 @@ function renderPowerSave(ps, pushAgeSec) {
   val.textContent = describePowerSave(ps, pushAgeSec);
 }
 
+// describeReplicaSource is the source line when the status comes from the
+// replica. While a rig holds the dish up the cabin isn't dark (only the Pi is
+// out of reach), so the line drops "cabin dark" and the next-window time.
+function describeReplicaSource(s) {
+  const ps = s.powersave;
+  const held = psHeld(ps);
+  let t = 'Replica · ' + (held ? '' : 'cabin dark, ') + 'last heard ' + fmtAge(s.push_age_sec || 0) + ' ago';
+  if (ps && ps.armed && ps.next_up_at && !held) t += ', next window ' + fmtClock(ps.next_up_at);
+  if (ps && ps.overdue_sec > 0) t += ' — OVERDUE ' + fmtAge(ps.overdue_sec);
+  if (s.error) t += ' — ' + s.error;
+  return t;
+}
+
 // describeBattery is the Battery row's text, e.g. "87% · charging +120 W".
 // On the replica the reading is as old as the last push or older, so its age
 // is always shown; age_sec already includes the push's age.
@@ -1076,12 +1089,7 @@ function renderHearthStatus() {
     src.textContent = 'Pi · live';
   } else if (s.source === 'replica') {
     src.className = 'station-source warn';
-    let t = 'Replica · cabin dark, last heard ' + fmtAge(s.push_age_sec || 0) + ' ago';
-    const ps = s.powersave;
-    if (ps && ps.armed && ps.next_up_at && !psHeld(ps)) t += ', next window ' + fmtClock(ps.next_up_at);
-    if (ps && ps.overdue_sec > 0) t += ' — OVERDUE ' + fmtAge(ps.overdue_sec);
-    if (s.error) t += ' — ' + s.error;
-    src.textContent = t;
+    src.textContent = describeReplicaSource(s);
   } else {
     src.className = 'station-source warn';
     src.textContent = 'Unreachable — ' + (s.error || 'no response');

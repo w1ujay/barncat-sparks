@@ -38,19 +38,40 @@ func jsFunc(t *testing.T, name string) string {
 	return ""
 }
 
-// TestPowerSaveRow runs the page's Power-save row code under node against a
-// stub psState element and checks the text and color it leaves there.
-func TestPowerSaveRow(t *testing.T) {
+// runJS runs the named webui.html functions plus body under node, with input
+// on stdin, and returns stdout. It skips the test when node isn't installed.
+func runJS(t *testing.T, fns []string, body string, input any) []byte {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not installed")
 	}
 	var src strings.Builder
-	for _, fn := range []string{"fmtAge", "ageSec", "fmtClock", "psHeld", "describePowerSave", "renderPowerSave"} {
+	for _, fn := range fns {
 		src.WriteString(jsFunc(t, fn))
 		src.WriteString("\n")
 	}
-	src.WriteString(`
+	src.WriteString(body)
+	in, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(node, "-e", src.String())
+	cmd.Stdin = strings.NewReader(string(in))
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("node: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("node: %v", err)
+	}
+	return out
+}
+
+// TestPowerSaveRow runs the page's Power-save row code under node against a
+// stub psState element and checks the text and color it leaves there.
+func TestPowerSaveRow(t *testing.T) {
+	const body = `
 const el = {className: '', textContent: ''};
 const document = {getElementById: () => el};
 const cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));
@@ -58,7 +79,7 @@ console.log(JSON.stringify(cases.map(c => {
   renderPowerSave(c.ps, c.age);
   return {text: el.textContent, class: el.className};
 })));
-`)
+`
 
 	cases := []struct {
 		name  string
@@ -89,20 +110,7 @@ console.log(JSON.stringify(cases.map(c => {
 	for i, c := range cases {
 		in[i] = jsCase{PS: json.RawMessage(c.ps), Age: c.age}
 	}
-	input, err := json.Marshal(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(node, "-e", src.String())
-	cmd.Stdin = strings.NewReader(string(input))
-	out, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("node: %v\n%s", err, ee.Stderr)
-		}
-		t.Fatalf("node: %v", err)
-	}
+	out := runJS(t, []string{"fmtAge", "ageSec", "fmtClock", "psHeld", "describePowerSave", "renderPowerSave"}, body, in)
 	var got []struct {
 		Text  string `json:"text"`
 		Class string `json:"class"`
@@ -127,6 +135,51 @@ console.log(JSON.stringify(cases.map(c => {
 		}
 		if g.Class != wantClass {
 			t.Errorf("%s: class = %q, want %q", c.name, g.Class, wantClass)
+		}
+	}
+}
+
+// TestReplicaSourceLine checks the source line shown when Sparks reads the
+// replica: while a rig holds the dish up the cabin isn't dark, so the line
+// must not say so or give a next-window time beside "held up".
+func TestReplicaSourceLine(t *testing.T) {
+	const body = `
+const cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+console.log(JSON.stringify(cases.map(describeReplicaSource)));
+`
+	cases := []struct {
+		name   string
+		status string
+		want   string // prefix
+		dark   bool
+	}{
+		{name: "held, fresh push", status: `{"source":"replica","push_age_sec":5,
+			"powersave":{"enabled":true,"armed":true,"phase":"down","next_up_at":"2026-09-27T16:00:00Z","held_by":"k4"}}`,
+			want: "Replica · last heard 5s ago"},
+		{name: "armed and down", status: `{"source":"replica","push_age_sec":2520,
+			"powersave":{"enabled":true,"armed":true,"phase":"down","next_up_at":"2026-09-27T16:00:00Z"}}`,
+			want: "Replica · cabin dark, last heard 42m ago, next window ", dark: true},
+		{name: "no powersave block", status: `{"source":"replica","push_age_sec":60}`,
+			want: "Replica · cabin dark, last heard 60s ago", dark: true},
+	}
+	in := make([]json.RawMessage, len(cases))
+	for i, c := range cases {
+		in[i] = json.RawMessage(c.status)
+	}
+	out := runJS(t, []string{"fmtAge", "fmtClock", "psHeld", "describeReplicaSource"}, body, in)
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	for i, c := range cases {
+		if !strings.HasPrefix(got[i], c.want) {
+			t.Errorf("%s: line = %q, want prefix %q", c.name, got[i], c.want)
+		}
+		if dark := strings.Contains(got[i], "cabin dark"); dark != c.dark {
+			t.Errorf("%s: line = %q, says cabin dark = %v, want %v", c.name, got[i], dark, c.dark)
+		}
+		if !c.dark && strings.Contains(got[i], "next window") {
+			t.Errorf("%s: line = %q, want no next-window time while held", c.name, got[i])
 		}
 	}
 }
