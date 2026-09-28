@@ -142,6 +142,28 @@ func TestK3RadioUnsupported(t *testing.T) {
 	}
 }
 
+// TestK3RadioUnsupportedKYVariantLogsOncePerPrefix: distinct KYW messages
+// (arbitrary client-supplied text) share a prefix and must be recorded once,
+// not once per distinct message.
+func TestK3RadioUnsupportedKYVariantLogsOncePerPrefix(t *testing.T) {
+	k, _ := newTestK3(t)
+	k.mu.Lock()
+	before := len(k.warned)
+	k.mu.Unlock()
+	if _, err := k.Raw("KYW TEST ONE"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Raw(KYW TEST ONE) err = %v, want ErrUnsupported", err)
+	}
+	if _, err := k.Raw("KYW TEST TWO"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Raw(KYW TEST TWO) err = %v, want ErrUnsupported", err)
+	}
+	k.mu.Lock()
+	after := len(k.warned)
+	k.mu.Unlock()
+	if after-before != 1 {
+		t.Fatalf("warned grew by %d for two KYW messages sharing a prefix, want 1", after-before)
+	}
+}
+
 func TestK3RadioQueries(t *testing.T) {
 	k, _ := newTestK3(t)
 	if hz, err := k.GetFreqA(); err != nil || hz != 14083999 {
@@ -219,10 +241,14 @@ func TestK3RadioConcurrentQueryRecovers(t *testing.T) {
 }
 
 // A slow reply while an NR tap is in flight must not clear it: a second tap
-// would undo the first when both land.
+// would undo the first when both land. tapDelay is kept longer than the
+// recovery path (poll + query timeout + retry, ~1.1s) but under the
+// toggler's 2s settle, so the tap has not yet landed when the recovery pass
+// re-reads DS: only then does a wrongly forgotten pending tap draw a second
+// SWT34.
 func TestK3RadioSlowReplyKeepsPendingTap(t *testing.T) {
 	k, f := newTestK3(t)
-	f.set(func(f *fakeK3) { f.tapDelay = time.Second })
+	f.set(func(f *fakeK3) { f.tapDelay = 1500 * time.Millisecond })
 	k.SetNR(true)
 	waitUntil(t, "first tap", func() bool { return f.count("SWT34") == 1 })
 	f.set(func(f *fakeK3) { f.silent = true })
