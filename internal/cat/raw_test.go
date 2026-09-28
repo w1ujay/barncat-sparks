@@ -507,3 +507,76 @@ func TestRawAbandonedIDQuerySendsNoSecondID(t *testing.T) {
 		t.Fatalf("sent %d ID queries, want 1 (one outstanding)", n)
 	}
 }
+
+// Regression: an abandoned ID query's reply arrives while the client is idle
+// for longer than syncStaleWindow and sits unread. The next resync must take
+// it as the outstanding sync's answer, not declare the sync lost, send a
+// replacement ID and take the old reply for the replacement's (leaving the
+// replacement's reply to end a later resync early). Replies are in order:
+// "?" for ZZ9 after 20 ms, the first ID after 100 ms, any second ID after
+// 550 ms, the first FA 50 ms after its read; FA numbered by count.
+func TestRawExpiredSyncTakesQueuedReply(t *testing.T) {
+	var ids, fas atomic.Int32
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		switch cmd {
+		case "ZZ9":
+			time.Sleep(20 * time.Millisecond)
+			fmt.Fprint(conn, "?;")
+		case "ID":
+			switch ids.Add(1) {
+			case 1:
+				time.Sleep(100 * time.Millisecond)
+			case 2:
+				time.Sleep(550 * time.Millisecond)
+			}
+			fmt.Fprint(conn, "ID017;")
+		case "FA":
+			n := fas.Add(1)
+			if n == 1 {
+				time.Sleep(50 * time.Millisecond)
+			}
+			fmt.Fprintf(conn, "FA%011d;", n)
+		case "FB":
+			fmt.Fprint(conn, "FB00000000001;")
+		}
+	})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	if _, err := c.Raw("ZZ9"); err != nil {
+		t.Fatalf("Raw(ZZ9): %v", err)
+	}
+	if _, err := c.Raw("ID"); !errors.Is(err, ErrRadioRejected) {
+		t.Fatalf("Raw(ID) err = %v, want ErrRadioRejected (the stray ?)", err)
+	}
+	time.Sleep(syncStaleWindow + 100*time.Millisecond) // idle: ID017 arrives unread
+	ownFA := func(q int, got string) {
+		t.Helper()
+		if _, err := c.Raw("FB"); err != nil {
+			t.Fatalf("fence Raw(FB): %v", err)
+		}
+		if want := fmt.Sprintf("FA%011d", fas.Load()); got != want {
+			t.Fatalf("FA query %d = %q, want the reply to its own FA %q", q, got, want)
+		}
+	}
+	if got, err := c.Raw("FA"); err == nil {
+		ownFA(1, got)
+	} else if !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("first Raw(FA) err = %v, want nil or ErrQueryTimeout", err)
+	}
+	got, err := c.Raw("FA")
+	if err != nil {
+		t.Fatalf("second Raw(FA): %v", err)
+	}
+	ownFA(2, got)
+	if n := ids.Load(); n != 1 {
+		t.Errorf("sent %d ID queries, want 1 (the queued reply answered the first)", n)
+	}
+}
+
+// The mid-wait sync replacement extends a query's wait by at most one
+// rawQueryTimeout only because the window is longer than the timeout.
+func TestSyncStaleWindowExceedsQueryTimeout(t *testing.T) {
+	if syncStaleWindow <= rawQueryTimeout {
+		t.Fatalf("syncStaleWindow %v must exceed rawQueryTimeout %v", syncStaleWindow, rawQueryTimeout)
+	}
+}
