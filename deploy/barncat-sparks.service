@@ -1,0 +1,16 @@
+[Unit]
+Description=BarnCat Sparks (K3 RadioServer)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=admin
+ExecStart=/opt/barncat-sparks/barncat-sparks -nogui -radio-model k3 \
+  -cat-transport serial \
+  -cat-serial /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9LMVRZK-if00-port0 \
+  -radio-listen <pi-tailnet-ip>:9400
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
