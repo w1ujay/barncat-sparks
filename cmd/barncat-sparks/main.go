@@ -49,6 +49,8 @@ func main() {
 	catPassword := flag.String("cat-password", "", "K4 authentication password (for port 9205)")
 	catListen := flag.String("cat-listen", "", "TCP listen address for CAT server (e.g., :9300)")
 	radioListen := flag.String("radio-listen", "", "TCP listen address for RadioServer (e.g., :9400)")
+	radioModel := flag.String("radio-model", "", "Radio model: k4 or k3 (default k4; k3 needs -cat-transport serial)")
+	radioLogRaw := flag.Bool("radio-log-raw", false, "Log every command RadioServer passes through to the radio")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -79,9 +81,9 @@ func main() {
 
 	// If CLI flags specify port or midi, run headless (backwards compatible)
 	if *portName != "" || *midiDevice != "" || *noGUI {
-		runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
-			*catTransport, *catSerialPort, *catBaud, *catPassword, *catListen, *radioListen)
-		return
+		os.Exit(runHeadless(*portName, *catAddr, *speed, *midiDevice, *midiConfigPath, cfgPath,
+			*catTransport, *catSerialPort, *catBaud, *catPassword, *catListen, *radioListen,
+			*radioModel, *radioLogRaw))
 	}
 
 	// Otherwise, launch web UI
@@ -94,8 +96,27 @@ func hasHeadlessWork(portName, midiDevice, catListen, radioListen string) bool {
 	return portName != "" || midiDevice != "" || catListen != "" || radioListen != ""
 }
 
+// validateRadioModel checks -radio-model against the transport and CATServer
+// settings before anything connects.
+func validateRadioModel(model, transport, catListen string) error {
+	switch model {
+	case "k4":
+		return nil
+	case "k3":
+		if transport != "serial" {
+			return fmt.Errorf("-radio-model k3 needs -cat-transport serial")
+		}
+		if catListen != "" {
+			return fmt.Errorf("-radio-model k3 can't be used with -cat-listen: CATServer relays raw bytes and would bypass K3 translation; use -radio-listen")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown radio model %q (want k4 or k3)", model)
+}
+
 func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath, cfgPath,
-	catTransport, catSerialPort string, catBaud int, catPassword string, catListen, radioListen string) {
+	catTransport, catSerialPort string, catBaud int, catPassword string,
+	catListen, radioListen, radioModel string, radioLogRaw bool) int {
 	// Load config for defaults if CLI flags are sparse
 	cfg, _ := config.LoadAppConfig(cfgPath)
 	if cfg == nil {
@@ -136,6 +157,12 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if midiConfigPath == "" && midiDevice != "" {
 		midiConfigPath = "midi-config.json"
 	}
+	if radioModel == "" {
+		radioModel = cfg.RadioModel
+	}
+	if radioModel == "" {
+		radioModel = "k4"
+	}
 
 	if !hasHeadlessWork(portName, midiDevice, catListen, radioListen) {
 		fmt.Fprintln(os.Stderr, "BarnCat Sparks - WinKeyer emulator & MIDI controller for K4")
@@ -165,11 +192,16 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 		fmt.Fprintln(os.Stderr, "  barncat-sparks -midi DJ2GO2                                # MIDI only")
 		fmt.Fprintln(os.Stderr, "  barncat-sparks -port COM5 -midi DJ2GO2 -cat k4:9299        # Both")
 		fmt.Fprintln(os.Stderr, "  barncat-sparks -cat-transport serial -cat-serial COM3 -cat-listen :9300  # Bridge")
-		os.Exit(1)
+		return 1
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4 (headless)", config.Version)
+
+	if err := validateRadioModel(radioModel, catTransport, catListen); err != nil {
+		log.Print(err)
+		return 1
+	}
 
 	c := cat.NewCATClient()
 	switch catTransport {
@@ -196,6 +228,20 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	}
 	defer c.Close()
 
+	var radio cat.Radio = c
+	var linkLost <-chan struct{}
+	if radioModel == "k3" {
+		k3, err := cat.NewK3Radio(c)
+		if err != nil {
+			log.Printf("K3: %v", err)
+			return 1
+		}
+		defer k3.Close() // runs before c.Close: sends RX, stops the KY sender
+		radio = k3
+		linkLost = c.Done()
+		log.Printf("  radio: K3 (translating K4 dialect)")
+	}
+
 	// Start CATServer if listen address configured
 	if catListen != "" {
 		srv, err := cat.NewCATServer(c, catListen)
@@ -209,10 +255,11 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 
 	// Start RadioServer if listen address configured
 	if radioListen != "" {
-		rsrv, err := cat.NewRadioServer(c, radioListen)
+		rsrv, err := cat.NewRadioServer(radio, radioListen)
 		if err != nil {
 			log.Fatalf("RadioServer: %v", err)
 		}
+		rsrv.SetLogRaw(radioLogRaw)
 		go rsrv.Run()
 		defer rsrv.Close()
 		log.Printf("  RadioServer: %s", radioListen)
@@ -221,13 +268,13 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 	if portName != "" {
 		log.Printf("  serial: %s", portName)
 		log.Printf("  speed:  %d WPM", speed)
-		wk := keyer.NewWinkeyer(c)
+		wk := keyer.NewWinkeyer(radio)
 		wk.SetWPM(speed)
 		if err := wk.OpenSerial(portName); err != nil {
 			log.Fatalf("Failed to open serial port %s: %v", portName, err)
 		}
 		defer wk.Close()
-		c.SetSpeed(speed)
+		radio.SetSpeed(speed)
 		go wk.Run()
 	}
 
@@ -237,7 +284,7 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 			log.Fatalf("Failed to load MIDI config %s: %v", midiConfigPath, err)
 		}
 		midiCfg.Devices = []string{midiDevice}
-		exec := controls.New(c)
+		exec := controls.New(radio)
 		defer exec.Close() // deferred first, so it runs after midiDrv.Close
 		midiDrv := midi.NewMIDIDriver(exec, midiCfg)
 		go func() {
@@ -251,6 +298,12 @@ func runHeadless(portName, catAddr string, speed int, midiDevice, midiConfigPath
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Println("sparks: shutting down")
+	select {
+	case <-sig:
+		log.Println("sparks: shutting down")
+		return 0
+	case <-linkLost:
+		log.Println("sparks: radio link lost; exiting so the service manager restarts it")
+		return 1
+	}
 }

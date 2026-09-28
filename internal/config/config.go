@@ -20,6 +20,7 @@ type AppConfig struct {
 	CATPassword       string         `json:"cat_password,omitempty"`
 	CATListen         string         `json:"cat_listen"`
 	RadioServerListen string         `json:"radio_server_listen"`
+	RadioModel        string         `json:"radio_model,omitempty"` // "k4" (default) or "k3"; headless only
 	AmpURL            string         `json:"amp_url"`
 	LP100Port         string         `json:"lp100_port"`
 	KeyerSpeed        int            `json:"keyer_speed"`

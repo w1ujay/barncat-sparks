@@ -25,3 +25,24 @@ func TestHasHeadlessWork(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRadioModel(t *testing.T) {
+	tests := []struct {
+		model, transport, catListen string
+		wantErr                     bool
+	}{
+		{"k4", "tcp", "", false},
+		{"k4", "serial", ":9300", false},
+		{"k3", "serial", "", false},
+		{"k3", "tcp", "", true},
+		{"k3", "serial", ":9300", true},
+		{"ic7300", "serial", "", true},
+	}
+	for _, tt := range tests {
+		err := validateRadioModel(tt.model, tt.transport, tt.catListen)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateRadioModel(%q, %q, %q) = %v, wantErr %v",
+				tt.model, tt.transport, tt.catListen, err, tt.wantErr)
+		}
+	}
+}
