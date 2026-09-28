@@ -18,21 +18,24 @@ import (
 type fakeK3 struct {
 	ln net.Listener
 
-	mu       sync.Mutex
-	conn     net.Conn
-	cmds     []string          // every command received, in order
-	vals     map[string]string // replies to bare queries
-	silent   bool              // powered off: no replies
-	capacity int               // KY buffer size; 0 = unlimited
-	buffered int
-	sent     []byte // characters accepted into the KY buffer
-	overflow int
-	nr, ntch bool
-	tapDelay time.Duration // tap-to-effect delay
-	dsText   string        // the 8 display bytes in a DS reply
-	dsDelay  time.Duration // DS reply delay (written from another goroutine)
-	k3mode   byte          // '0' after power-up, '1' once K31 is set
-	tx       bool          // transmitting (TX until RX)
+	mu          sync.Mutex
+	conn        net.Conn
+	cmds        []string          // every command received, in order
+	vals        map[string]string // replies to bare queries
+	silent      bool              // powered off: no replies
+	capacity    int               // KY buffer size; 0 = unlimited
+	buffered    int
+	sent        []byte // characters accepted into the KY buffer
+	overflow    int
+	nr, ntch    bool
+	tapDelay    time.Duration   // tap-to-effect delay
+	dsText      string          // the 8 display bytes in a DS reply
+	dsDelay     time.Duration   // DS reply delay (written from another goroutine)
+	k3mode      byte            // '0' after power-up, '1' once K31 is set
+	tx          bool            // transmitting (TX until RX)
+	rejectSets  map[string]bool // commands answered "?" (a rejected passthrough set) instead of applied
+	rejectDelay time.Duration   // delay before a rejectSets "?" reply
+	kyDelay     time.Duration   // delay before every KY poll reply (KY0/KY1)
 }
 
 func newFakeK3(t *testing.T) *fakeK3 {
@@ -103,6 +106,8 @@ func (f *fakeK3) handle(cmd string) (string, time.Duration) {
 		return "", 0
 	}
 	switch {
+	case f.rejectSets[cmd]:
+		return "?", f.rejectDelay
 	case cmd == "K3":
 		return "K3" + string(f.k3mode), 0
 	case cmd == "K30" || cmd == "K31":
@@ -119,9 +124,9 @@ func (f *fakeK3) handle(cmd string) (string, time.Duration) {
 		return "", 0
 	case cmd == "KY":
 		if f.capacity > 0 && f.buffered >= f.capacity {
-			return "KY1", 0
+			return "KY1", f.kyDelay
 		}
-		return "KY0", 0
+		return "KY0", f.kyDelay
 	case strings.HasPrefix(cmd, "KY "):
 		for i := 3; i < len(cmd); i++ {
 			if f.capacity > 0 && f.buffered >= f.capacity {

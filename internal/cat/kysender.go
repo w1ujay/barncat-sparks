@@ -41,10 +41,10 @@ type kySender struct {
 	done    chan struct{}
 	stopped chan struct{}
 
-	pollGap     time.Duration // wait between polls while the buffer is full
-	fullTimeout time.Duration // drop the queue when the buffer stays full this long
-	maxQueue    int           // queued characters allowed
-	maxTimeouts int           // consecutive poll timeouts before dropping the queue
+	pollGap        time.Duration // wait between polls while the buffer is full
+	fullTimeout    time.Duration // drop the queue when the buffer stays full this long
+	maxQueue       int           // queued characters allowed
+	maxFailedPolls int           // consecutive failed polls (timeouts or rejections) before dropping the queue
 
 	afterPoll  func() // test hook: after a poll returns, before any check
 	afterCheck func() // test hook: sendMu held and generation checked, before the write
@@ -52,16 +52,16 @@ type kySender struct {
 
 func newKYSender(room func() (bool, error), write func(string) error, abort func() error) *kySender {
 	return &kySender{
-		room:        room,
-		write:       write,
-		abort:       abort,
-		wake:        make(chan struct{}, 1),
-		done:        make(chan struct{}),
-		stopped:     make(chan struct{}),
-		pollGap:     50 * time.Millisecond,
-		fullTimeout: 10 * time.Second,
-		maxQueue:    512,
-		maxTimeouts: 3,
+		room:           room,
+		write:          write,
+		abort:          abort,
+		wake:           make(chan struct{}, 1),
+		done:           make(chan struct{}),
+		stopped:        make(chan struct{}),
+		pollGap:        50 * time.Millisecond,
+		fullTimeout:    10 * time.Second,
+		maxQueue:       512,
+		maxFailedPolls: 3,
 	}
 }
 
@@ -174,10 +174,12 @@ func (s *kySender) stale(gen uint64) bool {
 }
 
 // sendOne polls until the radio has room, then writes ch unless an abort
-// intervened.
+// intervened. A poll never writes text; only a "not full" KY0 authorizes the
+// write below, so retrying a failed or rejected poll cannot duplicate an
+// on-air character.
 func (s *kySender) sendOne(ch byte, gen uint64) {
 	var fullSince time.Time
-	timeouts := 0
+	failedPolls := 0
 	for {
 		room, err := s.room()
 		if s.afterPoll != nil {
@@ -187,16 +189,20 @@ func (s *kySender) sendOne(ch byte, gen uint64) {
 			return
 		}
 		if err != nil {
-			if errors.Is(err, ErrQueryTimeout) {
-				timeouts++
-				if timeouts < s.maxTimeouts {
+			// A timeout and a rejection (an unrelated passthrough set's late
+			// "?;", per rawQuery's rawRejectGrace) both count toward the same
+			// consecutive-failure cap: either can be a stray, and retrying
+			// costs only a poll, not a written character.
+			if errors.Is(err, ErrQueryTimeout) || errors.Is(err, ErrRadioRejected) {
+				failedPolls++
+				if failedPolls < s.maxFailedPolls {
 					continue
 				}
 			}
 			s.drop(gen, err)
 			return
 		}
-		timeouts = 0
+		failedPolls = 0
 		if !room {
 			if fullSince.IsZero() {
 				fullSince = time.Now()

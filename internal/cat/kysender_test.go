@@ -318,12 +318,13 @@ func TestKYSenderTextDuringAbortWaitsForRX(t *testing.T) {
 }
 
 // An old poll that errors out after an abort must not drop text admitted
-// after the abort. The poll returns ErrRadioRejected (not ErrQueryTimeout)
-// so it would reach sendOne's error handling and call drop immediately, with
-// no retry, if the post-poll staleness check didn't already catch it first
-// (gen has already advanced by the time the barrier below releases, so this
-// exercises that staleness check; see TestKYSenderDropGuardProtectsTextAfterConcurrentAbort
-// for a case that instead exercises drop's own generation guard).
+// after the abort. The poll returns ErrRadioRejected (not ErrQueryTimeout),
+// and maxFailedPolls is set to 1 here so a single rejection is already at
+// the cap: absent the post-poll staleness check, sendOne's error handling
+// would call drop immediately, with no retry (gen has already advanced by
+// the time the barrier below releases, so this exercises that staleness
+// check; see TestKYSenderDropGuardProtectsTextAfterConcurrentAbort for a
+// case that instead exercises drop's own generation guard).
 func TestKYSenderStalePollDoesNotDropNewText(t *testing.T) {
 	b := &kyBuf{capacity: 32}
 	gate := newBarrier()
@@ -337,6 +338,7 @@ func TestKYSenderStalePollDoesNotDropNewText(t *testing.T) {
 	}
 	s := newKYSender(room, b.write, b.abort)
 	s.pollGap = time.Millisecond
+	s.maxFailedPolls = 1
 	s.afterPoll = gate.hook
 	s.start()
 	t.Cleanup(s.Close)
@@ -439,15 +441,46 @@ func TestKYSenderDropsQueueAfterThreeTimeouts(t *testing.T) {
 	}
 }
 
-func TestKYSenderRejectedPollDropsWithoutRetry(t *testing.T) {
+// A persistently rejecting radio (every poll answers "?;") counts each
+// rejection toward the same consecutive-failure cap as a timeout, and drops
+// the queue only once the cap is reached, without ever writing.
+func TestKYSenderPersistentRejectionDropsAfterThreePolls(t *testing.T) {
 	b := &kyBuf{capacity: 32, roomErr: ErrRadioRejected}
 	s := newTestSender(t, b, nil)
 	s.Enqueue("AB")
 	waitUntil(t, "queue dropped", func() bool { return s.queued() == 0 })
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.polls != 1 {
-		t.Fatalf("polls = %d, want 1", b.polls)
+	polls := b.polls
+	writes := len(b.got)
+	b.mu.Unlock()
+	if polls != 3 || writes != 0 {
+		t.Fatalf("polls = %d, writes = %d; want 3 polls and no writes", polls, writes)
+	}
+}
+
+// A stray rejection (one "?;" from an unrelated passthrough set, per
+// rawQuery's rawRejectGrace) must not drop queued CW: it counts as one
+// failed poll, well under the cap, and the sender simply re-polls.
+func TestKYSenderStrayRejectionDoesNotDropCW(t *testing.T) {
+	b := &kyBuf{capacity: 32}
+	var calls int
+	room := func() (bool, error) {
+		calls++
+		if calls == 1 {
+			return false, ErrRadioRejected
+		}
+		return b.room()
+	}
+	s := newKYSender(room, b.write, b.abort)
+	s.pollGap = time.Millisecond
+	s.start()
+	t.Cleanup(s.Close)
+	if err := s.Enqueue("ABC"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "ABC sent", func() bool { return len(b.writes()) == 3 })
+	if got := strings.Join(b.writes(), ""); got != "ABC" {
+		t.Fatalf("sent %q, want %q", got, "ABC")
 	}
 }
 
