@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - RadioServer no longer drops commands it doesn't model: N1MM's IF/SB/DV polling and mode changes other than CW and DATA (USB, LSB, CW-REV, DATA-REV) now reach the radio, and their replies come back
 - Sub-receiver queries such as NB$, NR$, RT$, XT$ and NM$ no longer switch that function off on the main receiver when sent to RadioServer
+- RadioServer answers a client's `AI;` with `AI0;` and no longer forwards `AI` sets to the radio, so a logger asking for auto-info can't make the K4 push unsolicited replies into Sparks's session
 
 ## [0.3.2] - 2026-09-27
 

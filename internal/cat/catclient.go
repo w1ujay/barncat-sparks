@@ -282,9 +282,15 @@ var ErrQueryTimeout = errors.New("query timeout")
 // rawQueryTimeout bounds one Raw query.
 var rawQueryTimeout = 500 * time.Millisecond
 
+// rawRejectGrace is how long rawQuery keeps waiting for a matching reply
+// after a "?;": long enough for the reply that follows a stray rejection,
+// short enough that a rejected query doesn't hold queryMu (and the KY sender
+// and abort behind it) for the whole rawQueryTimeout.
+var rawRejectGrace = 50 * time.Millisecond
+
 // bareSets are commands with no data that are sets, not queries: the radio
 // never answers them, so waiting for a reply would only time out.
-var bareSets = map[string]bool{"TX": true, "RX": true, "RC": true, "BU": true, "BD": true, "UP": true, "DN": true}
+var bareSets = map[string]bool{"TX": true, "RX": true, "RC": true, "BU": true, "BD": true, "UP": true, "DN": true, "RU": true, "RD": true}
 
 // bareMetaQueries are the meta-mode GETs, whose names end in a digit.
 var bareMetaQueries = map[string]bool{"K2": true, "K3": true, "K4": true}
@@ -324,20 +330,27 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 		return "", err
 	}
 	// "?;" names no command: it may be a late rejection of an earlier
-	// passed-through set. Note it and keep waiting for a matching reply; only
-	// a deadline with no match turns it into ErrRadioRejected.
+	// passed-through set. Note it and keep waiting for a matching reply, but
+	// only for rawRejectGrace (or the query deadline, if sooner); no match by
+	// then turns it into ErrRadioRejected.
+	var grace <-chan time.Time // nil until the first "?;"
 	rejected := false
 	timeout := time.After(rawQueryTimeout)
 	for {
 		select {
 		case resp := <-c.respCh:
 			if resp == "?" {
+				if grace == nil {
+					grace = time.After(rawRejectGrace)
+				}
 				rejected = true
 				continue
 			}
 			if strings.HasPrefix(resp, cmd) {
 				return resp, nil
 			}
+		case <-grace:
+			return "", ErrRadioRejected
 		case <-timeout:
 			if rejected {
 				return "", ErrRadioRejected

@@ -13,7 +13,8 @@ import (
 // fakeK3 is an in-memory Elecraft K3 on a TCP listener, for K3Radio tests.
 // It answers bare queries from vals, remembers sets as the reply to the
 // matching query, keeps a finite KY text buffer, and holds the NR/NTCH
-// switch state that SWT34/SWT32 flip and DS reports in its last byte.
+// switch state that SWT34/SWT32 flip and DS reports in its last byte (in K31
+// mode only, as on the radio).
 type fakeK3 struct {
 	ln net.Listener
 
@@ -132,11 +133,13 @@ func (f *fakeK3) handle(cmd string) (string, time.Duration) {
 		}
 		return "", 0
 	case cmd == "DS":
+		// Byte f carries the NR/NTCH icons only in K31 mode; in K30 (after
+		// power-up) it reads as all clear.
 		b := byte(0x80)
-		if f.nr {
+		if f.nr && f.k3mode == '1' {
 			b |= 0x04
 		}
-		if f.ntch {
+		if f.ntch && f.k3mode == '1' {
 			b |= 0x02
 		}
 		return "DS" + f.dsText + "\x80" + string([]byte{b}), f.dsDelay

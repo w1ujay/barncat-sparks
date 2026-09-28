@@ -39,8 +39,12 @@ func after(t *testing.T, k *K3Radio, f *fakeK3, fn func()) []string {
 
 func TestK3RadioInit(t *testing.T) {
 	_, f := newTestK3(t)
-	got := f.commands()[:4]
-	if want := []string{"K20", "K31", "AI0", "ID"}; !slices.Equal(got, want) {
+	// RX first: a transmitter left keyed by a crash or link loss before a
+	// restart is unkeyed before anything else.
+	want := []string{"RX", "K20", "K31", "AI0", "ID"}
+	got := f.commands()
+	got = got[:min(len(got), len(want))]
+	if !slices.Equal(got, want) {
 		t.Fatalf("init commands = %v, want %v", got, want)
 	}
 }
@@ -327,6 +331,29 @@ func TestK3RadioNRReadsStateFirst(t *testing.T) {
 	}
 }
 
+// An idle power cycle: nothing polled while the K3 was off, so no query
+// timed out and no re-init is armed, yet the K3 is back in K30, where DS
+// byte f reads NR and notch as off. NR is really on, so NR on must send no
+// tap; the K3 check before the DS read must restore K31 instead.
+func TestK3RadioIdlePowerCycleReadsNRInK31(t *testing.T) {
+	k, f := newTestK3(t)
+	f.set(func(f *fakeK3) { f.nr = true; f.k3mode = '0' })
+	k.SetNR(true)
+	waitUntil(t, "idle", k.tg.idle)
+	f.mu.Lock()
+	nr, mode := f.nr, f.k3mode
+	f.mu.Unlock()
+	if n := f.count("SWT34"); n != 0 {
+		t.Errorf("SWT34 sent %d times with NR already on", n)
+	}
+	if mode != '1' {
+		t.Errorf("K3 left in K3%c, want K31 restored", mode)
+	}
+	if !nr {
+		t.Errorf("NR ended off, want on")
+	}
+}
+
 func TestK3RadioDSWithSemicolonTapsNothing(t *testing.T) {
 	k, f := newTestK3(t)
 	f.set(func(f *fakeK3) { f.nr = true; f.dsText = "14;83999" })
@@ -389,7 +416,8 @@ func TestK3RadioRawPolicy(t *testing.T) {
 				t.Errorf("Raw(%s) = %q, %v; want accepted as a no-op", cmd, got, err)
 			}
 		}
-		for _, cmd := range []string{"K22", "K21", "K23", "K30", "KYW TEST", "SWH34", "SWH32"} {
+		for _, cmd := range []string{"K22", "K21", "K23", "K30", "KYW TEST", "SWH34", "SWH32",
+			"SWT16", "SWH16", "SWH18", "SWT99", "SWT1600000000"} {
 			if _, err := k.Raw(cmd); !errors.Is(err, ErrUnsupported) {
 				t.Errorf("Raw(%s) err = %v, want ErrUnsupported", cmd, err)
 			}
@@ -409,6 +437,22 @@ func TestK3RadioRawPolicy(t *testing.T) {
 	})
 	if !slices.Equal(sent, []string{"AI0", "MD2"}) {
 		t.Errorf("sent %v, want [AI0 MD2]", sent)
+	}
+
+	// Verified switch codes pass through; bare SW is the SWR query.
+	f.set(func(f *fakeK3) { f.vals["SW"] = "SW012" })
+	sent = after(t, k, f, func() {
+		for _, cmd := range []string{"SWT09", "SWT10", "SWT11"} {
+			if got, err := k.Raw(cmd); err != nil || got != "" {
+				t.Errorf("Raw(%s) = %q, %v", cmd, got, err)
+			}
+		}
+		if got, err := k.Raw("SW"); err != nil || got != "SW012" {
+			t.Errorf("Raw(SW) = %q, %v; want SW012", got, err)
+		}
+	})
+	if !slices.Equal(sent, []string{"SWT09", "SWT10", "SWT11", "SW"}) {
+		t.Errorf("sent %v, want [SWT09 SWT10 SWT11 SW]", sent)
 	}
 
 	k.Raw("KY HI")
@@ -508,5 +552,35 @@ func TestK3RadioRoundTripThroughRadioServer(t *testing.T) {
 	}
 	for w := 1; w <= 110; w++ {
 		check(fmt.Sprintf("PC%03dH", w), "PC", fmt.Sprintf("PC%03dH", w))
+	}
+}
+
+// After Close begins, nothing keys the radio: a RadioServer handler still
+// inside dispatch("TX") during shutdown must not send TX after Close's RX.
+// The test stops at Close's first step (marking the radio closed), with the
+// link still open, so a TX that got through would reach the fake.
+func TestK3RadioNoTXAfterClose(t *testing.T) {
+	k, f := newTestK3(t)
+	k.mu.Lock()
+	k.closed = true
+	k.mu.Unlock()
+	sent := after(t, k, f, func() {
+		if err := k.SetPTT(true); err == nil {
+			t.Error("SetPTT(true) after Close returned nil")
+		}
+		if _, err := k.Raw("TX"); err == nil {
+			t.Error("Raw(TX) after Close returned nil")
+		}
+	})
+	if len(sent) != 0 {
+		t.Fatalf("sent %v after Close began, want nothing", sent)
+	}
+	k.Close()
+	n := len(f.commands())
+	if err := k.SetPTT(true); err == nil {
+		t.Error("SetPTT(true) after Close returned nil")
+	}
+	if got := f.commands()[n:]; len(got) != 0 {
+		t.Fatalf("sent %v after Close, want nothing", got)
 	}
 }
