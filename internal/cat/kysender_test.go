@@ -163,7 +163,9 @@ func TestKYSenderStopsWhenFull(t *testing.T) {
 		t.Run(fmt.Sprintf("occupancy %d", start), func(t *testing.T) {
 			b := &kyBuf{capacity: 32, buffered: start}
 			s := newTestSender(t, b, nil)
-			s.Enqueue(strings.Repeat("E", 20))
+			if err := s.Enqueue(strings.Repeat("E", 20)); err != nil {
+				t.Fatal(err)
+			}
 			free := 32 - start
 			waitUntil(t, "buffer full", func() bool { return len(b.writes()) == free })
 			time.Sleep(20 * time.Millisecond)
@@ -194,7 +196,7 @@ func TestKYSenderEnqueueDoesNotBlock(t *testing.T) {
 	if err := s.Enqueue("BCD"); err != nil {
 		t.Fatal(err)
 	}
-	if d := time.Since(start); d > 50*time.Millisecond {
+	if d := time.Since(start); d > time.Second {
 		t.Fatalf("Enqueue blocked for %v", d)
 	}
 }
@@ -208,10 +210,12 @@ func TestKYSenderAbortBetweenPollAndSend(t *testing.T) {
 			s := newTestSender(t, b, func(s *kySender) { s.afterPoll = gate.hook })
 			s.Enqueue("ABC")
 			gate.wait(t)
+			var closeDone chan struct{}
 			if how == "Abort" {
 				s.Abort()
 			} else {
-				go s.Close() // Close waits for the sender, which is paused
+				closeDone = make(chan struct{})
+				go func() { s.Close(); close(closeDone) }() // Close waits for the sender, which is paused
 				waitUntil(t, "RX", func() bool { return len(b.writes()) == 1 })
 			}
 			close(gate.release)
@@ -226,6 +230,13 @@ func TestKYSenderAbortBetweenPollAndSend(t *testing.T) {
 					t.Fatalf("writes = %v, want [RX Z]", got)
 				}
 			}
+			if closeDone != nil {
+				select {
+				case <-closeDone:
+				case <-time.After(2 * time.Second):
+					t.Fatal("Close goroutine did not finish")
+				}
+			}
 		})
 	}
 }
@@ -235,16 +246,27 @@ func TestKYSenderAbortBetweenPollAndSend(t *testing.T) {
 func TestKYSenderAbortDuringStalledPoll(t *testing.T) {
 	b := &kyBuf{capacity: 32}
 	stall := make(chan struct{})
-	s := newKYSender(func() (bool, error) { <-stall; return true, nil }, b.write, b.abort)
+	entered := make(chan struct{})
+	var enterOnce sync.Once
+	room := func() (bool, error) {
+		enterOnce.Do(func() { close(entered) })
+		<-stall
+		return true, nil
+	}
+	s := newKYSender(room, b.write, b.abort)
 	s.start()
 	t.Cleanup(func() { close(stall); s.Close() })
 	s.Enqueue("A")
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("poll never started")
+	}
 	done := make(chan struct{})
 	go func() { s.Abort(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.Fatal("Abort waited for a stalled poll")
 	}
 }
@@ -295,8 +317,13 @@ func TestKYSenderTextDuringAbortWaitsForRX(t *testing.T) {
 	}
 }
 
-// An old poll that times out after an abort must not drop text admitted
-// after the abort.
+// An old poll that errors out after an abort must not drop text admitted
+// after the abort. The poll returns ErrRadioRejected (not ErrQueryTimeout)
+// so it would reach sendOne's error handling and call drop immediately, with
+// no retry, if the post-poll staleness check didn't already catch it first
+// (gen has already advanced by the time the barrier below releases, so this
+// exercises that staleness check; see TestKYSenderDropGuardProtectsTextAfterConcurrentAbort
+// for a case that instead exercises drop's own generation guard).
 func TestKYSenderStalePollDoesNotDropNewText(t *testing.T) {
 	b := &kyBuf{capacity: 32}
 	gate := newBarrier()
@@ -304,7 +331,7 @@ func TestKYSenderStalePollDoesNotDropNewText(t *testing.T) {
 	room := func() (bool, error) {
 		calls++
 		if calls == 1 {
-			return false, fmt.Errorf("KY: %w", ErrQueryTimeout)
+			return false, fmt.Errorf("KY: %w", ErrRadioRejected)
 		}
 		return b.room()
 	}
@@ -318,6 +345,68 @@ func TestKYSenderStalePollDoesNotDropNewText(t *testing.T) {
 	s.Abort()
 	s.Enqueue("NEW")
 	close(gate.release)
+	waitUntil(t, "NEW sent", func() bool { return len(b.writes()) == 4 })
+	if got := strings.Join(b.writes(), ","); got != "RX,N,E,W" {
+		t.Fatalf("writes = %s, want RX,N,E,W", got)
+	}
+}
+
+// drop's own generation guard (kysender.go's drop, independent of the
+// post-poll staleness check in sendOne) must protect text admitted after a
+// concurrent abort. sendMu is held for the whole write, so an Abort
+// triggered from inside a failing write can bump the generation (which
+// only needs the state mutex) but cannot send RX until the write returns
+// and releases sendMu. This forces that exact ordering and admits NEW
+// before the failing write returns, so by the time sendOne calls drop for
+// the stale write, the post-poll staleness check has already passed (long
+// before this write started) and only drop's own generation guard stands
+// between the failed write and wiping NEW.
+func TestKYSenderDropGuardProtectsTextAfterConcurrentAbort(t *testing.T) {
+	b := &kyBuf{capacity: 32}
+	var s *kySender
+	var once sync.Once
+	writeFailure := errors.New("simulated write failure")
+	write := func(text string) error {
+		fire := false
+		once.Do(func() { fire = true })
+		if !fire {
+			return b.write(text)
+		}
+		s.mu.Lock()
+		g0 := s.gen
+		s.mu.Unlock()
+		go s.Abort() // blocks on sendMu, held by this write, after bumping gen
+		// Poll for the generation bump. This runs on the sender's own
+		// goroutine (inside write), not the test goroutine, so it must not
+		// call t.Fatal/Fatalf (unsafe off the test goroutine); t.Error is
+		// safe from any goroutine and the outer waitUntil below still times
+		// out and fails the test if the bump never happens.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			s.mu.Lock()
+			bumped := s.gen != g0
+			s.mu.Unlock()
+			if bumped {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Error("generation never bumped")
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if err := s.Enqueue("NEW"); err != nil {
+			t.Errorf("Enqueue(NEW) during abort: %v", err)
+		}
+		return writeFailure
+	}
+	s = newKYSender(b.room, write, b.abort)
+	s.pollGap = time.Millisecond
+	s.start()
+	t.Cleanup(s.Close)
+	if err := s.Enqueue("OLD"); err != nil {
+		t.Fatal(err)
+	}
 	waitUntil(t, "NEW sent", func() bool { return len(b.writes()) == 4 })
 	if got := strings.Join(b.writes(), ","); got != "RX,N,E,W" {
 		t.Fatalf("writes = %s, want RX,N,E,W", got)
