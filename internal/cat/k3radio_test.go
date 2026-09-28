@@ -495,7 +495,7 @@ func TestK3RadioRawPolicy(t *testing.T) {
 			}
 		}
 		for _, cmd := range []string{"K22", "K21", "K23", "K30", "KYW TEST", "SWH34", "SWH32",
-			"SWT16", "SWH16", "SWH18", "SWT99", "SWT1600000000"} {
+			"SWT16", "SWH16", "SWH18", "SWT99", "SWT1600000000", "ID$"} {
 			if _, err := k.Raw(cmd); !errors.Is(err, ErrUnsupported) {
 				t.Errorf("Raw(%s) err = %v, want ErrUnsupported", cmd, err)
 			}
