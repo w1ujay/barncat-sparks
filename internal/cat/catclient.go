@@ -26,6 +26,8 @@ type CATClient struct {
 	respCh    chan string
 	decodeCh  chan string   // dedicated channel for TT (text decode) responses
 	queryMu   sync.Mutex    // serializes query transactions on respCh (drain, send, await)
+	syncCmd   string        // guarded by queryMu: resync query after an abandoned rawQuery ("" = never resync)
+	desync    bool          // guarded by queryMu: a rawQuery ended without its reply, which may still arrive
 	done      chan struct{} // closed when readLoop returns
 	doneOnce  sync.Once
 
@@ -319,12 +321,53 @@ func (c *CATClient) Raw(cmd string) (string, error) {
 	return c.rawQuery(cmd)
 }
 
+// setSyncQuery sets the query rawQuery uses to resynchronize after a query
+// ended without its reply ("" disables resync, the default). The radio must
+// answer it and answer commands in order, as Elecraft radios on serial do.
+func (c *CATClient) setSyncQuery(cmd string) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	c.syncCmd = cmd
+}
+
+// resyncLocked runs before a query once an earlier one was abandoned (it
+// timed out or was rejected before its reply came), since that reply may
+// still be on its way and would satisfy this query instead. It sends syncCmd
+// and discards everything up to syncCmd's reply: the radio answers in order,
+// so every late reply precedes it. Caller holds queryMu. If no reply comes
+// within rawQueryTimeout, it fails with ErrQueryTimeout and desync stays set.
+func (c *CATClient) resyncLocked(cmd string) error {
+	c.drainResponses()
+	if err := c.Send(c.syncCmd + ";"); err != nil {
+		return err
+	}
+	timeout := time.After(rawQueryTimeout)
+	for {
+		select {
+		case resp := <-c.respCh:
+			if strings.HasPrefix(resp, c.syncCmd) {
+				c.desync = false
+				return nil
+			}
+		case <-timeout:
+			return fmt.Errorf("%s: no answer to resync %s: %w", cmd, c.syncCmd, ErrQueryTimeout)
+		}
+	}
+}
+
 // rawQuery sends cmd and waits for the reply whose prefix is cmd, whatever
 // isBareQuery says about it. It holds queryMu for the whole drain → send →
-// await transaction, like query.
+// await transaction, like query. If a sync query is set and an earlier
+// rawQuery ended without its reply, it resynchronizes first (resyncLocked);
+// a failed resync fails this query without sending cmd.
 func (c *CATClient) rawQuery(cmd string) (string, error) {
 	c.queryMu.Lock()
 	defer c.queryMu.Unlock()
+	if c.desync && c.syncCmd != "" {
+		if err := c.resyncLocked(cmd); err != nil {
+			return "", err
+		}
+	}
 	c.drainResponses()
 	if err := c.Send(cmd + ";"); err != nil {
 		return "", err
@@ -350,8 +393,11 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 				return resp, nil
 			}
 		case <-grace:
+			// cmd's own reply may still come: resync before the next query.
+			c.desync = true
 			return "", ErrRadioRejected
 		case <-timeout:
+			c.desync = true
 			if rejected {
 				return "", ErrRadioRejected
 			}

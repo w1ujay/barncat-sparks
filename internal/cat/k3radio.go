@@ -50,6 +50,10 @@ type K3Radio struct {
 // restored before the first query once it does.
 func NewK3Radio(c *CATClient) (*K3Radio, error) {
 	k := &K3Radio{c: c, closeTimeout: 2 * time.Second, rfSaved: [2]int{250, 250}, warned: map[string]bool{}}
+	// After a query ends without its reply (timeout, or rejection grace),
+	// resync with ID so that late reply can't answer the next query (a KY
+	// poll's late KY0 would otherwise authorize a write into a full buffer).
+	c.setSyncQuery("ID")
 	if err := c.Send("RX;" + k3Init); err != nil {
 		return nil, fmt.Errorf("K3 init: %w", err)
 	}

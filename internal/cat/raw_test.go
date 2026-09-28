@@ -132,3 +132,88 @@ func TestDoneClosesWhenLinkDrops(t *testing.T) {
 		t.Fatal("Done not closed after the radio closed the link")
 	}
 }
+
+// lateReplyResponder answers the first FA only after rawQueryTimeout (a
+// slow radio), later FAs at once, and ID with ID017. It answers in command
+// order, as a radio on serial does.
+func lateReplyResponder(t *testing.T) (net.Listener, chan string) {
+	t.Helper()
+	fas := 0
+	return mockCATResponder(t, func(cmd string, conn net.Conn) {
+		switch cmd {
+		case "FA":
+			fas++
+			if fas == 1 {
+				time.Sleep(rawQueryTimeout + 100*time.Millisecond)
+			}
+			fmt.Fprintf(conn, "FA%011d;", fas)
+		case "ID":
+			fmt.Fprint(conn, "ID017;")
+		}
+	})
+}
+
+// Regression: a query times out and its reply arrives late. With a sync
+// query set, the next query must resync and return its own reply, not the
+// late one.
+func TestRawResyncsAfterTimeout(t *testing.T) {
+	ln, cmds := lateReplyResponder(t)
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	if _, err := c.Raw("FA"); !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("first Raw(FA) err = %v, want ErrQueryTimeout", err)
+	}
+	got, err := c.Raw("FA")
+	if err != nil || got != "FA00000000002" {
+		t.Fatalf("second Raw(FA) = %q, %v; want its own reply FA00000000002, not the late FA00000000001", got, err)
+	}
+	for _, want := range []string{"FA", "ID", "FA"} {
+		expectCmd(t, cmds, want)
+	}
+	// Back in sync: the next query sends no ID.
+	if got, err := c.Raw("FA"); err != nil || got != "FA00000000003" {
+		t.Fatalf("third Raw(FA) = %q, %v; want FA00000000003", got, err)
+	}
+	expectCmd(t, cmds, "FA")
+}
+
+// A radio that doesn't answer the resync fails the query with
+// ErrQueryTimeout and never sends it.
+func TestRawResyncFailureDoesNotSendQuery(t *testing.T) {
+	ln, cmds := mockCATResponder(t, func(string, net.Conn) {})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	if _, err := c.Raw("FA"); !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("err = %v, want ErrQueryTimeout", err)
+	}
+	if _, err := c.Raw("FB"); !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("err = %v, want ErrQueryTimeout", err)
+	}
+	for _, want := range []string{"FA", "ID"} {
+		expectCmd(t, cmds, want)
+	}
+	select {
+	case got := <-cmds:
+		t.Fatalf("sent %q after a failed resync, want nothing", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// With no sync query set (the K4 path), rawQuery behaves as before: no ID
+// is ever sent.
+func TestRawNoSyncQuerySendsNoID(t *testing.T) {
+	ln, cmds := lateReplyResponder(t)
+	c := connectClient(t, ln)
+	if _, err := c.Raw("FA"); !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("first Raw(FA) err = %v, want ErrQueryTimeout", err)
+	}
+	c.Raw("FA")
+	for _, want := range []string{"FA", "FA"} {
+		expectCmd(t, cmds, want)
+	}
+	select {
+	case got := <-cmds:
+		t.Fatalf("sent %q with no sync query set", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
