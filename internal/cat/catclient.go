@@ -391,8 +391,10 @@ drain:
 // less than syncStaleWindow ago is unanswered, no new one is sent, so
 // whichever syncCmd reply comes is the outstanding one's. An outstanding
 // sync older than the window, before or during the wait, is presumed lost
-// and replaced, and the replacement gets a full rawQueryTimeout. It does not
-// drain first: the outstanding sync's reply may already be queued. Caller
+// and replaced, and the replacement gets a full rawQueryTimeout. Only when
+// the outstanding sync is still unexpired does it wait without draining
+// first; an expired one is drained via lostOrAnsweredLocked, since its reply
+// may already be queued. Caller
 // holds queryMu. If no reply comes in time, it fails with ErrQueryTimeout;
 // desync and the outstanding sync stay set.
 func (c *CATClient) resyncLocked(cmd string) error {

@@ -439,6 +439,12 @@ func (k *K3Radio) Raw(cmd string) (string, error) {
 		return k.translate(cmd, func(v int) string { return fmt.Sprintf("%s-%02d", cmd, clamp(250-v, 0, 60)) })
 	case cmd == "PC":
 		return k.translate(cmd, func(v int) string { return fmt.Sprintf("PC%03dH", v) })
+	case cmd == "ID$":
+		// The K3 has no sub-receiver ID and may ignore the "$" and answer
+		// "ID017;" like a bare ID. That reply would be untracked (CATClient
+		// tracks at most one outstanding ID as its resync marker) and could
+		// end a later resync early, so reject instead of passing it through.
+		return "", k.unsupported(cmd)
 	case isBareQuery(cmd):
 		return k.query(cmd)
 	}
