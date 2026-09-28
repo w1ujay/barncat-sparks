@@ -344,12 +344,42 @@ func (c *CATClient) sendSyncLocked() error {
 	return c.Send(c.syncCmd + ";")
 }
 
-// expireSyncLocked forgets an outstanding sync sent syncStaleWindow or more
-// ago: its reply is presumed lost. Caller holds queryMu.
-func (c *CATClient) expireSyncLocked() {
-	if !c.syncSent.IsZero() && time.Since(c.syncSent) >= syncStaleWindow {
-		c.syncSent = time.Time{}
+// expireSyncLocked handles an outstanding sync sent syncStaleWindow or more
+// ago. Its reply may have come while nobody was reading (the client was
+// idle), so the queued replies are drained first: if one is a syncCmd reply,
+// the sync completed — syncSent and desync are cleared, the other drained
+// replies are stale (no real query is sent while a sync is outstanding) and
+// discarded, and the reply is returned with true. Otherwise the sync is
+// presumed lost and forgotten, and the caller sends a replacement. Caller
+// holds queryMu.
+func (c *CATClient) expireSyncLocked() (string, bool) {
+	if c.syncSent.IsZero() || time.Since(c.syncSent) < syncStaleWindow {
+		return "", false
 	}
+	return c.lostOrAnsweredLocked()
+}
+
+// lostOrAnsweredLocked decides an expired outstanding sync, as described at
+// expireSyncLocked. Caller holds queryMu.
+func (c *CATClient) lostOrAnsweredLocked() (string, bool) {
+	var answer string
+drain:
+	for {
+		select {
+		case resp := <-c.respCh:
+			if answer == "" && strings.HasPrefix(resp, c.syncCmd) {
+				answer = resp
+			}
+		default:
+			break drain
+		}
+	}
+	c.syncSent = time.Time{}
+	if answer == "" {
+		return "", false
+	}
+	c.desync = false
+	return answer, true
 }
 
 // resyncLocked runs before a query once an earlier one was abandoned (it
@@ -366,7 +396,9 @@ func (c *CATClient) expireSyncLocked() {
 // holds queryMu. If no reply comes in time, it fails with ErrQueryTimeout;
 // desync and the outstanding sync stay set.
 func (c *CATClient) resyncLocked(cmd string) error {
-	c.expireSyncLocked()
+	if _, ok := c.expireSyncLocked(); ok {
+		return nil
+	}
 	if c.syncSent.IsZero() {
 		if err := c.sendSyncLocked(); err != nil {
 			return err
@@ -386,6 +418,9 @@ func (c *CATClient) resyncLocked(cmd string) error {
 				return nil
 			}
 		case <-expire.C:
+			if _, ok := c.lostOrAnsweredLocked(); ok {
+				return nil
+			}
 			if err := c.sendSyncLocked(); err != nil {
 				return err
 			}
@@ -417,7 +452,9 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 	var expireC <-chan time.Time
 	var expire *time.Timer
 	if isSync {
-		c.expireSyncLocked()
+		if reply, ok := c.expireSyncLocked(); ok {
+			return reply, nil
+		}
 		if c.syncSent.IsZero() {
 			if err := c.sendSyncLocked(); err != nil {
 				c.desync = true
@@ -466,7 +503,11 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 				return resp, nil
 			}
 		case <-expireC:
-			// The outstanding sync is presumed lost: replace it.
+			// Unless its reply is already queued, the outstanding sync is
+			// presumed lost: replace it.
+			if reply, ok := c.lostOrAnsweredLocked(); ok {
+				return reply, nil
+			}
 			if err := c.sendSyncLocked(); err != nil {
 				c.desync = true
 				return "", err
