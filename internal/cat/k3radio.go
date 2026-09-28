@@ -13,6 +13,9 @@ import (
 // ErrUnsupported is returned by radio methods the connected model can't do.
 var ErrUnsupported = errors.New("not supported on this radio")
 
+// errK3Closed is returned by methods that would key the radio after Close.
+var errK3Closed = errors.New("K3: radio closed")
+
 // k3Init pins the K3's command modes: K2 normal (basic KY0/KY1 replies), K3
 // extended (DS icon byte f), and no auto-info.
 const k3Init = "K20;K31;AI0;"
@@ -35,17 +38,19 @@ type K3Radio struct {
 
 	mu      sync.Mutex // guards the fields below; never held across CAT I/O
 	reinit  bool       // a query timed out: check for a reset before the next query
+	closed  bool       // Close has begun: nothing may key the radio
 	rfSaved [2]int     // last RF gain (K3 units) set per receiver
 	rfAtMax [2]bool    // ToggleRFGain moved that receiver to 250
 	warned  map[string]bool
 }
 
-// NewK3Radio wraps c, pins the K3's command modes and checks it is a K3. A K3
-// that doesn't answer (powered off) is not an error: the modes are restored
-// before the first query once it does.
+// NewK3Radio wraps c, unkeys the K3 (a transmitter left keyed by a crash or
+// link loss before this restart), pins its command modes and checks it is a
+// K3. A K3 that doesn't answer (powered off) is not an error: the modes are
+// restored before the first query once it does.
 func NewK3Radio(c *CATClient) (*K3Radio, error) {
 	k := &K3Radio{c: c, closeTimeout: 2 * time.Second, rfSaved: [2]int{250, 250}, warned: map[string]bool{}}
-	if err := c.Send(k3Init); err != nil {
+	if err := c.Send("RX;" + k3Init); err != nil {
 		return nil, fmt.Errorf("K3 init: %w", err)
 	}
 	switch id, err := c.Raw("ID"); {
@@ -67,7 +72,11 @@ var _ Radio = (*K3Radio)(nil)
 // Close aborts any keying (sending RX), stops the workers and closes the
 // link. A worker stuck in a serial write holds its lock, so a watchdog closes
 // the link after closeTimeout: that fails the write and lets shutdown finish.
+// Close first marks the radio closed, so no TX can follow the RX.
 func (k *K3Radio) Close() {
+	k.mu.Lock()
+	k.closed = true
+	k.mu.Unlock()
 	closeWithin(k.closeTimeout, k.c.Close, k.ky.Close, k.tg.Close)
 	k.c.Close()
 }
@@ -114,6 +123,15 @@ func (k *K3Radio) query(cmd string) (string, error) {
 		k.tg.ForgetPending()
 	}
 	return reply, err
+}
+
+// noteTimeout arms re-init after a query timeout, as query does.
+func (k *K3Radio) noteTimeout(err error) {
+	if errors.Is(err, ErrQueryTimeout) {
+		k.mu.Lock()
+		k.reinit = true
+		k.mu.Unlock()
+	}
 }
 
 // recover runs before the first query after a timeout. The K3 powers up in
@@ -176,11 +194,22 @@ func (k *K3Radio) SendRTTYEOT() error { return nil }
 
 func (k *K3Radio) SendCWElement(bool) error { return k.unsupported("KZ paddle elements") }
 
+// SetPTT(true) sends TX under the KY sender's sendMu, the lock Abort holds
+// to send RX. Close marks the radio closed before its RX, so a TX either
+// reaches the radio before that RX or is refused: none follows it.
 func (k *K3Radio) SetPTT(on bool) error {
-	if on {
-		return k.c.SetPTT(true)
+	if !on {
+		return k.ky.Abort()
 	}
-	return k.ky.Abort()
+	return k.ky.exclusive(func() error {
+		k.mu.Lock()
+		closed := k.closed
+		k.mu.Unlock()
+		if closed {
+			return errK3Closed
+		}
+		return k.c.SetPTT(true)
+	})
 }
 
 func (k *K3Radio) SetSpeed(wpm int) error   { return k.c.SetSpeed(clamp(wpm, 8, 50)) }
@@ -274,10 +303,44 @@ func (k *K3Radio) SetTextDecode(bool) error {
 }
 func (k *K3Radio) QueryDecode() (string, error) { return "", k.unsupported("text decode") }
 
-// readToggles reads NR and NTCH from byte f of the DS reply (K31 mode).
+// readToggles reads NR and NTCH from byte f of the DS reply. Byte f carries
+// them only in K31 mode, and an idle power cycle (no query timed out, so no
+// re-init is armed) leaves the K3 in K30, where they read as off. So each
+// read first checks the mode, under qmu as one operation with the DS query:
+// K30 restores the modes, drops taps sent before the reset and fails this
+// read (the next one reads DS in K31); anything but K31 fails the read.
 func (k *K3Radio) readToggles() (bool, bool, error) {
-	reply, err := k.query("DS")
+	k.qmu.Lock()
+	defer k.qmu.Unlock()
+	mode, err := k.c.rawQuery("K3")
 	if err != nil {
+		k.noteTimeout(err)
+		return false, false, err
+	}
+	switch mode {
+	case "K31":
+	case "K30":
+		err := k.c.Send(k3Init)
+		if err == nil {
+			k.mu.Lock()
+			k.reinit = false // modes restored
+			k.mu.Unlock()
+		}
+		k.tg.ForgetPending()
+		if err != nil {
+			return false, false, err
+		}
+		return false, false, errors.New("K3: found in K30 (power cycled); modes restored, DS not read")
+	default:
+		return false, false, fmt.Errorf("K3: unexpected reply %q to K3", mode)
+	}
+	// K31: the modes are intact, so the K3 is at most slow; nothing to recover.
+	k.mu.Lock()
+	k.reinit = false
+	k.mu.Unlock()
+	reply, err := k.c.Raw("DS")
+	if err != nil {
+		k.noteTimeout(err)
 		return false, false, err
 	}
 	// "DS" + 8 display bytes + icon byte a + byte f. A display byte can be
@@ -338,6 +401,18 @@ func (k *K3Radio) Raw(cmd string) (string, error) {
 		return "", nil
 	case cmd == "SWH34" || cmd == "SWH32":
 		return "", k.unsupported(cmd)
+	case cmd == "SWT09" || cmd == "SWT10" || cmd == "SWT11":
+		return "", k.c.Send(cmd + ";") // BAND−, BAND+, A/B: verified on the K3
+	case isSwitchCode(cmd):
+		// Any other switch code may be XMIT (SWT16), TUNE (SWH16) or TEST
+		// (SWH18) on the K3: never pass an unverified one through.
+		key := cmd
+		if len(key) > 5 {
+			key = key[:5] + "..."
+		}
+		return "", k.unsupported("switch code " + key)
+	case cmd == "TX":
+		return "", k.SetPTT(true)
 	case cmd == "K4":
 		return "K41", nil
 	case len(cmd) == 3 && strings.HasPrefix(cmd, "K4"):
@@ -364,6 +439,20 @@ func (k *K3Radio) Raw(cmd string) (string, error) {
 		return k.query(cmd)
 	}
 	return "", k.c.Send(cmd + ";")
+}
+
+// isSwitchCode reports whether cmd is a tap or hold switch emulation:
+// "SW", then T or H, then one or more digits. Bare "SW" is the SWR query.
+func isSwitchCode(cmd string) bool {
+	if len(cmd) < 4 || cmd[:2] != "SW" || (cmd[2] != 'T' && cmd[2] != 'H') {
+		return false
+	}
+	for i := 3; i < len(cmd); i++ {
+		if cmd[i] < '0' || cmd[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // translate queries cmd in K3 form and rewrites the value into K4 form.

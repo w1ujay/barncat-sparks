@@ -17,6 +17,7 @@ func TestIsBareQuery(t *testing.T) {
 		{"K2", true}, {"K3", true}, {"K4", true}, {"KY", true},
 		{"MD2", false}, {"AG030", false}, {"K41", false}, {"KY HI", false},
 		{"TX", false}, {"RX", false}, {"RC", false}, {"UP", false}, {"DN", false},
+		{"RU", false}, {"RD", false},
 		{"A", false}, {"ag", false}, {"AG$0", false}, {"", false},
 	}
 	for _, tt := range tests {
@@ -77,9 +78,15 @@ func TestRawSetDoesNotWait(t *testing.T) {
 func TestRawRejectedWithoutMatchingReply(t *testing.T) {
 	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) { fmt.Fprint(conn, "?;") })
 	c := connectClient(t, ln)
+	start := time.Now()
 	_, err := c.Raw("XX")
 	if !errors.Is(err, ErrRadioRejected) || errors.Is(err, ErrQueryTimeout) {
 		t.Fatalf("err = %v, want ErrRadioRejected and not ErrQueryTimeout", err)
+	}
+	// A rejection must not hold queryMu (and the KY sender behind it) for
+	// the whole query timeout.
+	if d := time.Since(start); d >= 250*time.Millisecond {
+		t.Fatalf("rejected query took %v, want well under the %v timeout", d, rawQueryTimeout)
 	}
 }
 

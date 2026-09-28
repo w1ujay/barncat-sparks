@@ -408,6 +408,21 @@ func (s *RadioServer) dispatchTyped(cmd string, conn net.Conn) (bool, error) {
 		}
 		s.radio.SetNB(on)
 
+	case "AI":
+		// Auto-info stays off on the shared radio session: AI2 would make a
+		// K4 push unsolicited replies into the stream Sparks parses. A client
+		// is told it's off, and its sets are accepted without a reply (K4
+		// sets have none) but never forwarded.
+		switch {
+		case cmd == "AI":
+			_, err := fmt.Fprint(conn, "AI0;")
+			return true, err
+		case len(cmd) == 3 && cmd[2] >= '0' && cmd[2] <= '9':
+			return true, nil
+		default:
+			return false, nil
+		}
+
 	case "NR":
 		on, ok := onOff(cmd)
 		if !ok {

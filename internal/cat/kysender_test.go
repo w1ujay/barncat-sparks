@@ -495,3 +495,17 @@ func TestKYSenderCloseSendsRX(t *testing.T) {
 	}
 	s.Close() // idempotent
 }
+
+// A byte of 0x80 or above (RTTY text is bytes, not runes) is written as that
+// one byte; string(ch) would UTF-8-encode 0xC3 into two.
+func TestKYSenderWritesHighByteAsOneByte(t *testing.T) {
+	b := &kyBuf{capacity: 32}
+	s := newTestSender(t, b, nil)
+	if err := s.Enqueue("\xc3"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "write", func() bool { return len(b.writes()) == 1 })
+	if got := b.writes()[0]; got != "\xc3" {
+		t.Fatalf("wrote %q (%d bytes), want the single byte 0xC3", got, len(got))
+	}
+}

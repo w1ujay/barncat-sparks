@@ -111,6 +111,14 @@ func (s *kySender) Abort() error {
 	return err
 }
 
+// exclusive runs fn under sendMu, the lock Abort holds to send RX, so fn's
+// write reaches the radio wholly before or wholly after an abort's RX.
+func (s *kySender) exclusive(fn func() error) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return fn()
+}
+
 // Close stops admissions, aborts (sending RX) and waits for the sender to exit.
 func (s *kySender) Close() {
 	s.mu.Lock()
@@ -212,7 +220,7 @@ func (s *kySender) sendOne(ch byte, gen uint64) {
 		if s.afterCheck != nil {
 			s.afterCheck()
 		}
-		err = s.write(string(ch))
+		err = s.write(string([]byte{ch}))
 		s.mu.Lock()
 		if s.gen == gen && len(s.queue) > 0 {
 			s.queue = s.queue[1:]

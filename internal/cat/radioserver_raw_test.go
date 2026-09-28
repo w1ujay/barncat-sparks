@@ -87,3 +87,29 @@ func TestRadioServerRawErrorWritesNothing(t *testing.T) {
 		t.Fatalf("got %q, want FA00014060000 (nothing written for the failed IF)", got)
 	}
 }
+
+// TestRadioServerAutoInfoStaysOff: a client's AI query is answered AI0 and
+// its AI sets are swallowed. Forwarding AI2 would make a K4 push unsolicited
+// replies into the session Sparks parses.
+func TestRadioServerAutoInfoStaysOff(t *testing.T) {
+	mock := &mockRadio{freqA: 14060000, raw: map[string]string{"AI": "AI2"}}
+	srv := setupRadioServer(t, mock)
+	c := newTestClient(t, srv.Addr())
+	defer c.close()
+
+	c.send(t, "AI;")
+	if got := c.recv(t); got != "AI0" {
+		t.Errorf("AI: got %q, want AI0", got)
+	}
+	for _, cmd := range []string{"AI0", "AI1", "AI2", "AI4"} {
+		mock.reset()
+		c.send(t, cmd+";")
+		c.send(t, "FA;")
+		if got := c.recv(t); got != "FA00014060000" {
+			t.Errorf("%s: got %q before the FA reply, want nothing", cmd, got)
+		}
+		if got := mock.getCalls(); len(got) != 1 || got[0] != "GetFreqA()" {
+			t.Errorf("%s: calls = %v, want only [GetFreqA()]", cmd, got)
+		}
+	}
+}
