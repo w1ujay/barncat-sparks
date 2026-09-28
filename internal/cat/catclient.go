@@ -344,22 +344,29 @@ func (c *CATClient) sendSyncLocked() error {
 	return c.Send(c.syncCmd + ";")
 }
 
+// expireSyncLocked forgets an outstanding sync sent syncStaleWindow or more
+// ago: its reply is presumed lost. Caller holds queryMu.
+func (c *CATClient) expireSyncLocked() {
+	if !c.syncSent.IsZero() && time.Since(c.syncSent) >= syncStaleWindow {
+		c.syncSent = time.Time{}
+	}
+}
+
 // resyncLocked runs before a query once an earlier one was abandoned (it
 // timed out or was rejected before its reply came), since that reply may
 // still be on its way and would satisfy this query instead. It discards
 // everything up to a syncCmd reply: the radio answers in order, so every
-// late reply precedes it. At most one sync query is in flight: while one
-// sent less than syncStaleWindow ago is unanswered, no new one is sent, so
-// whichever sync reply comes is the outstanding one's. An outstanding sync
-// older than the window, before or during the wait, is presumed lost and
-// replaced. It does not drain first: the outstanding sync's reply may
-// already be queued. Caller holds queryMu. If no reply comes within
-// rawQueryTimeout, it fails with ErrQueryTimeout; desync and the outstanding
-// sync stay set.
+// late reply precedes it. At most one syncCmd query is in flight, whether a
+// resync's or an ordinary query for syncCmd (see rawQuery): while one sent
+// less than syncStaleWindow ago is unanswered, no new one is sent, so
+// whichever syncCmd reply comes is the outstanding one's. An outstanding
+// sync older than the window, before or during the wait, is presumed lost
+// and replaced, and the replacement gets a full rawQueryTimeout. It does not
+// drain first: the outstanding sync's reply may already be queued. Caller
+// holds queryMu. If no reply comes in time, it fails with ErrQueryTimeout;
+// desync and the outstanding sync stay set.
 func (c *CATClient) resyncLocked(cmd string) error {
-	if !c.syncSent.IsZero() && time.Since(c.syncSent) >= syncStaleWindow {
-		c.syncSent = time.Time{}
-	}
+	c.expireSyncLocked()
 	if c.syncSent.IsZero() {
 		if err := c.sendSyncLocked(); err != nil {
 			return err
@@ -367,7 +374,8 @@ func (c *CATClient) resyncLocked(cmd string) error {
 	}
 	expire := time.NewTimer(time.Until(c.syncSent.Add(syncStaleWindow)))
 	defer expire.Stop()
-	timeout := time.After(rawQueryTimeout)
+	timeout := time.NewTimer(rawQueryTimeout)
+	defer timeout.Stop()
 	for {
 		select {
 		case resp := <-c.respCh:
@@ -382,7 +390,8 @@ func (c *CATClient) resyncLocked(cmd string) error {
 				return err
 			}
 			expire.Reset(syncStaleWindow)
-		case <-timeout:
+			timeout.Reset(rawQueryTimeout)
+		case <-timeout.C:
 			return fmt.Errorf("%s: no answer to resync %s: %w", cmd, c.syncCmd, ErrQueryTimeout)
 		}
 	}
@@ -393,19 +402,43 @@ func (c *CATClient) resyncLocked(cmd string) error {
 // await transaction, like query. If a sync query is set and an earlier
 // rawQuery ended without its reply, it resynchronizes first (resyncLocked);
 // a failed resync fails this query without sending cmd.
+//
+// A query for syncCmd itself (the K3's ID) is handled as a sync, so at most
+// one syncCmd query is ever in flight: it needs no resync (any syncCmd
+// reply is the outstanding one's, and in-order delivery means every late
+// reply precedes it), it isn't sent while an unexpired sync is outstanding
+// (it takes that one's reply instead), and when it ends without its reply
+// it stays recorded as the outstanding sync, so a later resync waits for
+// that reply rather than sending another and taking this one's.
 func (c *CATClient) rawQuery(cmd string) (string, error) {
 	c.queryMu.Lock()
 	defer c.queryMu.Unlock()
-	if c.desync && c.syncCmd != "" {
-		if err := c.resyncLocked(cmd); err != nil {
+	isSync := c.syncCmd != "" && cmd == c.syncCmd
+	var expireC <-chan time.Time
+	var expire *time.Timer
+	if isSync {
+		c.expireSyncLocked()
+		if c.syncSent.IsZero() {
+			if err := c.sendSyncLocked(); err != nil {
+				c.desync = true
+				return "", err
+			}
+		}
+		expire = time.NewTimer(time.Until(c.syncSent.Add(syncStaleWindow)))
+		defer expire.Stop()
+		expireC = expire.C
+	} else {
+		if c.desync && c.syncCmd != "" {
+			if err := c.resyncLocked(cmd); err != nil {
+				return "", err
+			}
+		}
+		c.drainResponses()
+		if err := c.Send(cmd + ";"); err != nil {
+			// A partial or timed-out write may still reach the radio.
+			c.desync = true
 			return "", err
 		}
-	}
-	c.drainResponses()
-	if err := c.Send(cmd + ";"); err != nil {
-		// A partial or timed-out write may still reach the radio.
-		c.desync = true
-		return "", err
 	}
 	// "?;" names no command: it may be a late rejection of an earlier
 	// passed-through set. Note it and keep waiting for a matching reply, but
@@ -413,7 +446,8 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 	// then turns it into ErrRadioRejected.
 	var grace <-chan time.Time // nil until the first "?;"
 	rejected := false
-	timeout := time.After(rawQueryTimeout)
+	timeout := time.NewTimer(rawQueryTimeout)
+	defer timeout.Stop()
 	for {
 		select {
 		case resp := <-c.respCh:
@@ -425,13 +459,25 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 				continue
 			}
 			if strings.HasPrefix(resp, cmd) {
+				if isSync {
+					c.syncSent = time.Time{}
+					c.desync = false
+				}
 				return resp, nil
 			}
+		case <-expireC:
+			// The outstanding sync is presumed lost: replace it.
+			if err := c.sendSyncLocked(); err != nil {
+				c.desync = true
+				return "", err
+			}
+			expire.Reset(syncStaleWindow)
+			timeout.Reset(rawQueryTimeout)
 		case <-grace:
 			// cmd's own reply may still come: resync before the next query.
 			c.desync = true
 			return "", ErrRadioRejected
-		case <-timeout:
+		case <-timeout.C:
 			c.desync = true
 			if rejected {
 				return "", ErrRadioRejected

@@ -419,3 +419,91 @@ func TestRawSendFailureMarksDesync(t *testing.T) {
 		t.Fatal("failed sync send not recorded as outstanding")
 	}
 }
+
+// Regression: an ordinary ID query abandoned after a stray "?;" leaves its
+// ID017 in flight. It must count as the outstanding sync: a resync that sent
+// a second ID and took the first one's reply left its own ID017 to end a
+// later resync early, and a later FA got an earlier FA's reply. Replies are
+// in order: "?" for ZZ9 after 20 ms, the first ID after 100 ms, any second
+// ID after 550 ms, the first FA 50 ms after its read; FA numbered by count.
+func TestRawAbandonedIDQueryIsOutstandingSync(t *testing.T) {
+	var ids, fas atomic.Int32
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		switch cmd {
+		case "ZZ9":
+			time.Sleep(20 * time.Millisecond)
+			fmt.Fprint(conn, "?;")
+		case "ID":
+			switch ids.Add(1) {
+			case 1:
+				time.Sleep(100 * time.Millisecond)
+			case 2:
+				time.Sleep(550 * time.Millisecond)
+			}
+			fmt.Fprint(conn, "ID017;")
+		case "FA":
+			n := fas.Add(1)
+			if n == 1 {
+				time.Sleep(50 * time.Millisecond)
+			}
+			fmt.Fprintf(conn, "FA%011d;", n)
+		case "FB":
+			fmt.Fprint(conn, "FB00000000001;")
+		}
+	})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	if _, err := c.Raw("ZZ9"); err != nil {
+		t.Fatalf("Raw(ZZ9): %v", err)
+	}
+	if _, err := c.Raw("ID"); !errors.Is(err, ErrRadioRejected) {
+		t.Fatalf("Raw(ID) err = %v, want ErrRadioRejected (the stray ?)", err)
+	}
+	// ownFA checks that a successful FA query got the reply to the last FA
+	// sent. Fence: once FB is answered, every FA before it was counted.
+	ownFA := func(q int, got string) {
+		t.Helper()
+		if _, err := c.Raw("FB"); err != nil {
+			t.Fatalf("fence Raw(FB): %v", err)
+		}
+		if want := fmt.Sprintf("FA%011d", fas.Load()); got != want {
+			t.Fatalf("FA query %d = %q, want the reply to its own FA %q", q, got, want)
+		}
+	}
+	if got, err := c.Raw("FA"); err == nil {
+		ownFA(1, got)
+	} else if !errors.Is(err, ErrQueryTimeout) {
+		t.Fatalf("first Raw(FA) err = %v, want nil or ErrQueryTimeout", err)
+	}
+	got, err := c.Raw("FA")
+	if err != nil {
+		t.Fatalf("second Raw(FA): %v", err)
+	}
+	ownFA(2, got)
+}
+
+// An ordinary ID query that times out is the outstanding sync: neither a
+// later resync nor a later ID query sends a second ID while it is
+// unexpired; each waits for the outstanding one's reply.
+func TestRawAbandonedIDQuerySendsNoSecondID(t *testing.T) {
+	old := syncStaleWindow
+	syncStaleWindow = 3 * time.Second // outlasts the queries below
+	t.Cleanup(func() { syncStaleWindow = old })
+	var ids atomic.Int32
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		if cmd == "ID" {
+			ids.Add(1) // never answered: the radio is off
+		}
+	})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	for i, cmd := range []string{"ID", "FB", "ID"} {
+		if _, err := c.Raw(cmd); !errors.Is(err, ErrQueryTimeout) {
+			t.Fatalf("Q%d Raw(%s) err = %v, want ErrQueryTimeout", i+1, cmd, err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let the responder see what was sent
+	if n := ids.Load(); n != 1 {
+		t.Fatalf("sent %d ID queries, want 1 (one outstanding)", n)
+	}
+}
