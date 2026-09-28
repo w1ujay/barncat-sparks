@@ -15,6 +15,12 @@ const (
 	filterNotch
 )
 
+// genInFlight marks a pending[f] entry whose tap() call has not yet
+// returned: ForgetPending must not clear it, since the tap may still land.
+// Once tap() returns, the entry is stamped with the generation current at
+// that point, so it is judged against generations from then on.
+const genInFlight = -1
+
 func (f toggleFilter) String() string {
 	if f == filterNR {
 		return "NR"
@@ -36,13 +42,15 @@ type toggler struct {
 	read func() (nr, notch bool, err error)
 	tap  func(f toggleFilter) error
 
-	mu      sync.Mutex
-	want    [2]*bool     // latest requested state; nil = nothing requested
-	flip    [2]bool      // Toggle: request the opposite of the next observed state
-	pending [2]*bool     // state the last tap should produce; nil = no tap in flight
-	tapped  [2]time.Time // when the pending tap was sent
-	taps    [2]int       // taps sent for the current request
-	closed  bool
+	mu         sync.Mutex
+	want       [2]*bool     // latest requested state; nil = nothing requested
+	flip       [2]bool      // Toggle: request the opposite of the next observed state
+	pending    [2]*bool     // state the last tap should produce; nil = no tap in flight
+	pendingGen [2]int       // generation pending[f] belongs to; genInFlight while tap() hasn't returned
+	tapped     [2]time.Time // when the pending tap was sent
+	taps       [2]int       // taps sent for the current request
+	gen        int          // bumped by ForgetPending; discards readings and pending taps from before it
+	closed     bool
 
 	wake    chan struct{}
 	done    chan struct{}
@@ -72,9 +80,16 @@ func (t *toggler) start() {
 	go t.run()
 }
 
-// Set requests filter f on or off. The latest request wins.
+// Set requests filter f on or off. The latest request wins. A duplicate
+// request for the value already outstanding coalesces: it does not reset
+// the retry count, so a client that keeps re-sending "NR on" while the K3
+// ignores taps still gives up after maxTaps, instead of retrying forever.
 func (t *toggler) Set(f toggleFilter, on bool) {
 	t.mu.Lock()
+	if t.want[f] != nil && *t.want[f] == on && !t.flip[f] {
+		t.mu.Unlock()
+		return
+	}
 	v := on
 	t.want[f] = &v
 	t.flip[f] = false
@@ -93,12 +108,21 @@ func (t *toggler) Toggle(f toggleFilter) {
 	t.kick()
 }
 
-// ForgetPending drops taps in flight. Call it only with evidence the radio
-// was reset (power cycled): a tap sent before the reset can no longer land.
-// A slow reply is not such evidence.
+// ForgetPending drops taps recorded before this call. A tap whose tap() call
+// has not yet returned (genInFlight) survives: it may still land, and is
+// judged against generations from the point it returns instead. Call
+// ForgetPending only with evidence the radio was reset (power cycled): a tap
+// sent before the reset can no longer land. A slow reply is not such
+// evidence.
 func (t *toggler) ForgetPending() {
 	t.mu.Lock()
-	t.pending = [2]*bool{}
+	t.gen++
+	gen := t.gen
+	for i := range 2 {
+		if t.pending[i] != nil && t.pendingGen[i] != genInFlight && t.pendingGen[i] < gen {
+			t.pending[i] = nil
+		}
+	}
 	t.mu.Unlock()
 	t.kick()
 }
@@ -158,11 +182,22 @@ func (t *toggler) pass() time.Duration {
 	if t.idle() {
 		return 0
 	}
+	t.mu.Lock()
+	gen := t.gen
+	t.mu.Unlock()
 	nr, notch, err := t.read()
 	if err != nil {
 		return t.retry
 	}
 	observed := [2]bool{nr, notch}
+	t.mu.Lock()
+	if t.gen != gen {
+		// ForgetPending ran while the read was in flight: this reading
+		// predates it and says nothing about the post-reset state.
+		t.mu.Unlock()
+		return t.poll
+	}
+	t.mu.Unlock()
 	var next time.Duration
 	for i := range 2 {
 		f := toggleFilter(i)
@@ -209,10 +244,17 @@ func (t *toggler) pass() time.Duration {
 		expect := !observed[f]
 		t.pending[f] = &expect
 		t.tapped[f] = time.Now()
+		t.pendingGen[f] = genInFlight
 		t.mu.Unlock()
-		if err := t.tap(f); err != nil {
-			log.Printf("K3: %s tap: %v", f, err)
+		tapErr := t.tap(f)
+		t.mu.Lock()
+		if tapErr != nil {
+			log.Printf("K3: %s tap: %v", f, tapErr)
 		}
+		if t.pending[f] != nil {
+			t.pendingGen[f] = t.gen
+		}
+		t.mu.Unlock()
 		next = t.poll
 	}
 	return next

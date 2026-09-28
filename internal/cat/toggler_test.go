@@ -9,17 +9,21 @@ import (
 
 // swState simulates the K3's NR/NTCH switches for toggler tests.
 type swState struct {
-	mu        sync.Mutex
-	on        [2]bool
-	taps      []toggleFilter
-	readErr   error
-	ignore    bool          // taps have no effect (K3 off)
-	delay     time.Duration // time from a tap to its effect
-	readBlock chan struct{} // when set, read waits on it
+	mu          sync.Mutex
+	on          [2]bool
+	taps        []toggleFilter
+	readErr     error
+	ignore      bool          // taps have no effect (K3 off)
+	delay       time.Duration // time from a tap to its effect
+	readBlock   chan struct{} // when set, read waits on it
+	tapBlock    chan struct{} // when set, tap waits on it before recording
+	readEntries int           // read() calls entered so far, including ones still blocked
+	tapEntries  int           // tap() calls entered so far, including ones still blocked
 }
 
 func (s *swState) read() (bool, bool, error) {
 	s.mu.Lock()
+	s.readEntries++
 	block := s.readBlock
 	s.mu.Unlock()
 	if block != nil {
@@ -35,6 +39,13 @@ func (s *swState) read() (bool, bool, error) {
 
 func (s *swState) tap(f toggleFilter) error {
 	s.mu.Lock()
+	s.tapEntries++
+	block := s.tapBlock
+	s.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.taps = append(s.taps, f)
 	if s.ignore {
@@ -47,6 +58,18 @@ func (s *swState) tap(f toggleFilter) error {
 		s.on[f] = !s.on[f]
 	}
 	return nil
+}
+
+func (s *swState) readEntryCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readEntries
+}
+
+func (s *swState) tapEntryCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tapEntries
 }
 
 func (s *swState) tapCount() int {
@@ -122,6 +145,39 @@ func TestTogglerConcurrentDuplicatesTapOnce(t *testing.T) {
 		go func() { defer wg.Done(); tg.Set(filterNR, true) }()
 	}
 	wg.Wait()
+	waitUntil(t, "idle", tg.idle)
+	if s.tapCount() != 1 || !s.get(filterNR) {
+		t.Fatalf("taps = %d, NR = %v; want 1 tap, NR on", s.tapCount(), s.get(filterNR))
+	}
+}
+
+// A duplicate Set for the value already outstanding must not reset the
+// retry counter: otherwise a client that keeps re-sending "NR on" while the
+// K3 ignores taps (never converges) prevents the cap from ever being
+// reached, retrying forever instead of giving up after maxTaps.
+func TestTogglerDuplicateSetDoesNotResetRetryCap(t *testing.T) {
+	s := &swState{ignore: true}
+	settle := 20 * time.Millisecond
+	tg := newTestToggler(t, s, settle)
+	tg.Set(filterNR, true)
+	// Resend the same request well before the worker could give up (which
+	// takes about 3*settle): each resend must coalesce, not restart.
+	for range 5 {
+		time.Sleep(settle / 2)
+		tg.Set(filterNR, true)
+	}
+	waitUntil(t, "idle", tg.idle)
+	if n := s.tapCount(); n != 3 {
+		t.Fatalf("taps = %d, want 3 (duplicate Set must not reset the retry cap)", n)
+	}
+}
+
+func TestTogglerDuplicateSetWhilePendingSendsNoExtraTap(t *testing.T) {
+	s := &swState{delay: 30 * time.Millisecond}
+	tg := newTestToggler(t, s, 200*time.Millisecond)
+	tg.Set(filterNR, true)
+	waitUntil(t, "first tap", func() bool { return s.tapCount() == 1 })
+	tg.Set(filterNR, true) // duplicate while the tap is still pending
 	waitUntil(t, "idle", tg.idle)
 	if s.tapCount() != 1 || !s.get(filterNR) {
 		t.Fatalf("taps = %d, NR = %v; want 1 tap, NR on", s.tapCount(), s.get(filterNR))
@@ -210,6 +266,51 @@ func TestTogglerForgetPendingAfterPowerCycle(t *testing.T) {
 	}
 }
 
+// ForgetPending racing a tap() call that hasn't returned yet must not drop
+// that tap's tracking: otherwise the tap can still land while the worker,
+// believing nothing is pending, sends a second one for the same request.
+func TestTogglerForgetPendingDuringTapNotRetapped(t *testing.T) {
+	block := make(chan struct{})
+	s := &swState{delay: 10 * time.Millisecond, tapBlock: block}
+	tg := newTestToggler(t, s, 500*time.Millisecond)
+	tg.Set(filterNR, true)
+	waitUntil(t, "tap entered", func() bool { return s.tapEntryCount() == 1 })
+
+	tg.ForgetPending() // races the still-blocked tap() call
+
+	close(block)
+	waitUntil(t, "idle", tg.idle)
+	if n := s.tapCount(); n != 1 {
+		t.Fatalf("taps = %d, want 1 (ForgetPending mid-tap must not cause a retap)", n)
+	}
+	if !s.get(filterNR) {
+		t.Fatal("NR not on after the delayed tap landed")
+	}
+}
+
+// ForgetPending racing a read() call that hasn't returned yet must discard
+// that reading: it was taken before the reset ForgetPending responds to, so
+// no tap may be based on it. The worker must read again.
+func TestTogglerForgetPendingDuringReadDiscardsStaleReading(t *testing.T) {
+	block := make(chan struct{})
+	s := &swState{readBlock: block}
+	tg := newTestToggler(t, s, 50*time.Millisecond)
+	tg.Set(filterNR, true)
+	waitUntil(t, "read entered", func() bool { return s.readEntryCount() == 1 })
+
+	tg.ForgetPending() // bumps gen while the first read is still in flight
+
+	s.set(func(s *swState) { s.readBlock = nil })
+	close(block) // let the now-stale read return
+	waitUntil(t, "idle", tg.idle)
+	if n := s.readEntryCount(); n < 2 {
+		t.Fatalf("read called %d times, want >= 2 (a reading racing ForgetPending must be discarded and re-read)", n)
+	}
+	if s.tapCount() != 1 || !s.get(filterNR) {
+		t.Fatalf("taps = %d, NR = %v; want 1 tap, NR on", s.tapCount(), s.get(filterNR))
+	}
+}
+
 func TestTogglerToggleFlipsObservedState(t *testing.T) {
 	s := &swState{}
 	tg := newTestToggler(t, s, 50*time.Millisecond)
@@ -234,9 +335,40 @@ func TestTogglerCloseStopsTapping(t *testing.T) {
 	tg.Set(filterNR, true)
 	waitUntil(t, "first tap", func() bool { return s.tapCount() == 1 })
 	tg.Close()
+	// Close only promises no tap after it returns, not that exactly one tap
+	// happened before it: with a short settle, a second tap can legitimately
+	// land before Close is called if this goroutine is scheduled late.
+	n := s.tapCount()
 	time.Sleep(60 * time.Millisecond)
+	if m := s.tapCount(); m != n {
+		t.Fatalf("taps = %d after Close, want unchanged from %d", m, n)
+	}
+	tg.Close() // idempotent
+}
+
+// Close must wait out a tap() call already in flight rather than abandoning
+// it, and must send no further tap once it returns.
+func TestTogglerCloseWhileTapBlocked(t *testing.T) {
+	block := make(chan struct{})
+	s := &swState{tapBlock: block}
+	tg := newToggler(s.read, s.tap)
+	tg.settle = 500 * time.Millisecond
+	tg.poll = 2 * time.Millisecond
+	tg.start()
+	tg.Set(filterNR, true)
+	waitUntil(t, "tap entered", func() bool { return s.tapEntryCount() == 1 })
+
+	closed := make(chan struct{})
+	go func() { tg.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while tap() was still blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(block)
+	<-closed
 	if n := s.tapCount(); n != 1 {
 		t.Fatalf("taps = %d after Close, want 1", n)
 	}
-	tg.Close() // idempotent
 }
