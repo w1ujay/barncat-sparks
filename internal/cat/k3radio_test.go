@@ -65,8 +65,9 @@ func TestK3RadioStartsWithK3Off(t *testing.T) {
 	if hz, err := k.GetFreqA(); err != nil || hz != 14083999 {
 		t.Fatalf("GetFreqA = %d, %v", hz, err)
 	}
-	if got := f.commands()[:5]; !slices.Equal(got, []string{"K3", "K20", "K31", "AI0", "FA"}) {
-		t.Fatalf("commands after power-on = %v, want K3 K20 K31 AI0 FA", got)
+	// ID first: the init ID timed out, so the first query resyncs.
+	if got := f.commands()[:6]; !slices.Equal(got, []string{"ID", "K3", "K20", "K31", "AI0", "FA"}) {
+		t.Fatalf("commands after power-on = %v, want ID K3 K20 K31 AI0 FA", got)
 	}
 }
 
@@ -196,8 +197,10 @@ func TestK3RadioSlowReplyRecoversWithoutReset(t *testing.T) {
 	if _, err := k.GetFreqA(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.commands(); !slices.Equal(got, []string{"K3", "FA"}) {
-		t.Fatalf("recovery commands = %v, want [K3 FA]", got)
+	// ID: the timed-out FA's reply could still come, so the next query
+	// resyncs first.
+	if got := f.commands(); !slices.Equal(got, []string{"ID", "K3", "FA"}) {
+		t.Fatalf("recovery commands = %v, want [ID K3 FA]", got)
 	}
 	f.set(func(f *fakeK3) { f.cmds = nil })
 	k.GetFreqA()
@@ -216,8 +219,8 @@ func TestK3RadioPowerCycleRestoresModes(t *testing.T) {
 	if _, err := k.GetFreqA(); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.commands(); !slices.Equal(got, []string{"K3", "K20", "K31", "AI0", "FA"}) {
-		t.Fatalf("recovery commands = %v, want [K3 K20 K31 AI0 FA]", got)
+	if got := f.commands(); !slices.Equal(got, []string{"ID", "K3", "K20", "K31", "AI0", "FA"}) {
+		t.Fatalf("recovery commands = %v, want [ID K3 K20 K31 AI0 FA]", got)
 	}
 }
 
@@ -239,8 +242,9 @@ func TestK3RadioConcurrentQueryRecovers(t *testing.T) {
 	if err := <-bErr; err != nil {
 		t.Fatal(err)
 	}
-	if got := f.commands(); !slices.Equal(got, []string{"K3", "K20", "K31", "AI0", "FB"}) {
-		t.Fatalf("B sent %v, want [K3 K20 K31 AI0 FB]", got)
+	// ID: A timed out, so B resyncs before the recovery.
+	if got := f.commands(); !slices.Equal(got, []string{"ID", "K3", "K20", "K31", "AI0", "FB"}) {
+		t.Fatalf("B sent %v, want [ID K3 K20 K31 AI0 FB]", got)
 	}
 }
 
@@ -294,6 +298,50 @@ func TestK3RadioStrayRejectionDoesNotDropCW(t *testing.T) {
 	f.mu.Unlock()
 	if overflow != 0 {
 		t.Fatalf("overflow = %d, want 0", overflow)
+	}
+}
+
+// Regression: a KY poll rejected by an unrelated set's "?;" (rawRejectGrace
+// runs out before the poll's own reply) leaves that KY0 in flight. Without a
+// resync the late KY0 answered the retried poll, whose own KY0 (read while
+// the buffer was still empty) then answered the next character's poll, and
+// B went into a full one-slot buffer and was lost.
+func TestK3RadioLateKYReplyDoesNotOverflow(t *testing.T) {
+	k, f := newTestK3(t)
+	f.set(func(f *fakeK3) {
+		f.capacity = 1
+		f.rejectSets = map[string]bool{"ZZ9": true}
+		f.rejectDelay = 20 * time.Millisecond
+		f.kyDelay = 100 * time.Millisecond
+	})
+	overflow := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.overflow
+	}
+	if _, err := k.Raw("ZZ9"); err != nil {
+		t.Fatalf("Raw(ZZ9): %v", err)
+	}
+	if err := k.SendKY("AB"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "A sent", func() bool { return f.sentText() != "" })
+	// The buffer stays full until drained: several polls' worth of time
+	// passes with B held back.
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if n := overflow(); n != 0 {
+			t.Fatalf("overflow = %d with the buffer full (sent %q), want 0", n, f.sentText())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := f.sentText(); got != "A" {
+		t.Fatalf("sent %q before the drain, want \"A\"", got)
+	}
+	f.drain(1)
+	waitUntil(t, "AB sent", func() bool { return f.sentText() == "AB" })
+	if n := overflow(); n != 0 {
+		t.Fatalf("overflow = %d, want 0", n)
 	}
 }
 
@@ -422,6 +470,10 @@ func TestK3RadioRawPolicy(t *testing.T) {
 	}
 	if _, err := k.Raw("XX"); !errors.Is(err, ErrRadioRejected) {
 		t.Errorf("Raw(XX) err = %v, want ErrRadioRejected", err)
+	}
+	// A rejected query may still get a late reply: the next query resyncs.
+	if sent := after(t, k, f, func() {}); !slices.Equal(sent, []string{"ID"}) {
+		t.Errorf("query after a rejection sent %v before it, want [ID]", sent)
 	}
 
 	sent := after(t, k, f, func() {

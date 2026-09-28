@@ -35,7 +35,7 @@ type fakeK3 struct {
 	tx          bool            // transmitting (TX until RX)
 	rejectSets  map[string]bool // commands answered "?" (a rejected passthrough set) instead of applied
 	rejectDelay time.Duration   // delay before a rejectSets "?" reply
-	kyDelay     time.Duration   // delay before every KY poll reply (KY0/KY1)
+	kyDelay     time.Duration   // delay before every KY poll reply (KY0/KY1); later replies wait behind it
 }
 
 func newFakeK3(t *testing.T) *fakeK3 {
@@ -72,12 +72,20 @@ func (f *fakeK3) serve() {
 	f.mu.Lock()
 	f.conn = conn
 	f.mu.Unlock()
-	var wmu sync.Mutex
-	reply := func(s string) {
-		wmu.Lock()
-		defer wmu.Unlock()
-		fmt.Fprint(conn, s+";")
+	// Replies go out in command order, as on the radio: a delayed reply
+	// also holds back every reply after it.
+	type pending struct {
+		r  string
+		at time.Time
 	}
+	out := make(chan pending, 1024)
+	go func() {
+		for p := range out {
+			time.Sleep(time.Until(p.at))
+			fmt.Fprint(conn, p.r+";")
+		}
+	}()
+	defer close(out)
 	sc := bufio.NewScanner(conn)
 	sc.Split(SplitSemicolon)
 	for sc.Scan() {
@@ -85,13 +93,8 @@ func (f *fakeK3) serve() {
 		if cmd == "" {
 			continue
 		}
-		r, delay := f.handle(cmd)
-		switch {
-		case r == "":
-		case delay > 0:
-			go func() { time.Sleep(delay); reply(r) }()
-		default:
-			reply(r)
+		if r, delay := f.handle(cmd); r != "" {
+			out <- pending{r, time.Now().Add(delay)}
 		}
 	}
 }
