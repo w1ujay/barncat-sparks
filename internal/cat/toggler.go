@@ -190,14 +190,6 @@ func (t *toggler) pass() time.Duration {
 		return t.retry
 	}
 	observed := [2]bool{nr, notch}
-	t.mu.Lock()
-	if t.gen != gen {
-		// ForgetPending ran while the read was in flight: this reading
-		// predates it and says nothing about the post-reset state.
-		t.mu.Unlock()
-		return t.poll
-	}
-	t.mu.Unlock()
 	var next time.Duration
 	for i := range 2 {
 		f := toggleFilter(i)
@@ -205,6 +197,15 @@ func (t *toggler) pass() time.Duration {
 		if t.closed {
 			t.mu.Unlock()
 			return 0
+		}
+		if t.gen != gen {
+			// ForgetPending ran since this reading was taken — whether
+			// before the read (the whole reading predates it) or between
+			// filters (an earlier filter's tap() call ran long enough for
+			// it to land): either way this filter's half of the reading
+			// says nothing about the post-reset state.
+			t.mu.Unlock()
+			return t.poll
 		}
 		if p := t.pending[f]; p != nil {
 			switch {
