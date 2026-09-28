@@ -271,6 +271,32 @@ func TestK3RadioSlowReplyKeepsPendingTap(t *testing.T) {
 	}
 }
 
+// Regression: a stray "?;" answering an unrelated passthrough set must not
+// be mistaken for the KY poll's own reply and drop queued CW. Before the
+// kySender fix, rawQuery's rawRejectGrace (50ms) turned the late "?;" into
+// ErrRadioRejected, which sendOne treated as an immediate, no-retry drop.
+func TestK3RadioStrayRejectionDoesNotDropCW(t *testing.T) {
+	k, f := newTestK3(t)
+	f.set(func(f *fakeK3) {
+		f.rejectSets = map[string]bool{"ZZ9": true}
+		f.rejectDelay = 20 * time.Millisecond
+		f.kyDelay = 100 * time.Millisecond
+	})
+	if _, err := k.Raw("ZZ9"); err != nil {
+		t.Fatalf("Raw(ZZ9): %v", err)
+	}
+	if err := k.SendKY("ABC"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "ABC sent", func() bool { return f.sentText() == "ABC" })
+	f.mu.Lock()
+	overflow := f.overflow
+	f.mu.Unlock()
+	if overflow != 0 {
+		t.Fatalf("overflow = %d, want 0", overflow)
+	}
+}
+
 func TestK3RadioKYOneCharPerWrite(t *testing.T) {
 	k, f := newTestK3(t)
 	if err := k.SendKY("CQ TEST"); err != nil {
