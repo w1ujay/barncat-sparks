@@ -321,7 +321,15 @@ func (k *K3Radio) Raw(cmd string) (string, error) {
 	case strings.HasPrefix(cmd, "KY "):
 		return "", k.ky.Enqueue(cmd[3:])
 	case strings.HasPrefix(cmd, "KY"):
-		return "", k.unsupported("KY variant " + cmd)
+		// Key on the command prefix, not the full client-supplied text: KYW
+		// (say) carries arbitrary message text, and logging/recording on the
+		// full string would log every distinct message again and grow
+		// warned without bound.
+		key := cmd
+		if len(key) > 3 {
+			key = key[:3]
+		}
+		return "", k.unsupported("KY variant " + key)
 	case cmd == "SWT34":
 		k.tg.Toggle(filterNR)
 		return "", nil
