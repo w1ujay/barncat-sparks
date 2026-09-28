@@ -21,20 +21,23 @@ type swState struct {
 	tapEntries  int           // tap() calls entered so far, including ones still blocked
 }
 
+// read snapshots the switch state (and any error) before blocking, not
+// after: it models a query whose reply is already determined but delayed in
+// arriving, so a test can change swState after the snapshot and still see
+// the toggler act on the value the "reply" actually carries.
 func (s *swState) read() (bool, bool, error) {
 	s.mu.Lock()
 	s.readEntries++
+	nr, notch, err := s.on[filterNR], s.on[filterNotch], s.readErr
 	block := s.readBlock
 	s.mu.Unlock()
 	if block != nil {
 		<-block
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.readErr != nil {
-		return false, false, s.readErr
+	if err != nil {
+		return false, false, err
 	}
-	return s.on[filterNR], s.on[filterNotch], nil
+	return nr, notch, nil
 }
 
 func (s *swState) tap(f toggleFilter) error {
@@ -76,6 +79,18 @@ func (s *swState) tapCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.taps)
+}
+
+func (s *swState) filterTapCount(f toggleFilter) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, tf := range s.taps {
+		if tf == f {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *swState) get(f toggleFilter) bool {
@@ -290,24 +305,57 @@ func TestTogglerForgetPendingDuringTapNotRetapped(t *testing.T) {
 
 // ForgetPending racing a read() call that hasn't returned yet must discard
 // that reading: it was taken before the reset ForgetPending responds to, so
-// no tap may be based on it. The worker must read again.
+// acting on it could be wrong. Here NR is actually already on by the time
+// the stale "off" reading is delivered, so acting on it would wrongly tap
+// NR back off; the worker must instead re-read and see it's already met.
 func TestTogglerForgetPendingDuringReadDiscardsStaleReading(t *testing.T) {
 	block := make(chan struct{})
-	s := &swState{readBlock: block}
+	s := &swState{readBlock: block} // NR off when the query is captured
 	tg := newTestToggler(t, s, 50*time.Millisecond)
 	tg.Set(filterNR, true)
 	waitUntil(t, "read entered", func() bool { return s.readEntryCount() == 1 })
 
-	tg.ForgetPending() // bumps gen while the first read is still in flight
+	// The radio's actual state moves to "on" as part of the same reset
+	// ForgetPending responds to; the in-flight read already captured "off".
+	s.set(func(s *swState) { s.on[filterNR] = true })
+	tg.ForgetPending()
 
 	s.set(func(s *swState) { s.readBlock = nil })
-	close(block) // let the now-stale read return
+	close(block) // deliver the stale "off" reading
 	waitUntil(t, "idle", tg.idle)
-	if n := s.readEntryCount(); n < 2 {
-		t.Fatalf("read called %d times, want >= 2 (a reading racing ForgetPending must be discarded and re-read)", n)
+	if n := s.tapCount(); n != 0 {
+		t.Fatalf("taps = %d, want 0 (NR was already on; the stale reading must not cause a tap)", n)
 	}
-	if s.tapCount() != 1 || !s.get(filterNR) {
-		t.Fatalf("taps = %d, NR = %v; want 1 tap, NR on", s.tapCount(), s.get(filterNR))
+	if !s.get(filterNR) {
+		t.Fatal("NR should already be on")
+	}
+}
+
+// ForgetPending can land while an earlier filter's tap() call is still in
+// flight, i.e. between that filter's lock and the next filter's lock in the
+// same pass. The next filter's half of that pass's reading is just as stale
+// as one taken before read() itself, and must be discarded the same way.
+func TestTogglerForgetPendingDuringOtherFilterTapDiscardsReading(t *testing.T) {
+	tapBlock := make(chan struct{})
+	s := &swState{tapBlock: tapBlock} // NR and notch both off
+	tg := newTestToggler(t, s, 500*time.Millisecond)
+	tg.Set(filterNR, true)    // filter 0: dispatched first, tap() blocks
+	tg.Set(filterNotch, true) // filter 1: judged against this pass's reading
+	waitUntil(t, "NR tap entered", func() bool { return s.tapEntryCount() == 1 })
+
+	// Notch's actual state moves to "on" (e.g. the same reset) while NR's
+	// tap() call — and so filter 1's turn in this pass — is still blocked.
+	// This pass's `observed` for notch was already captured as "off".
+	s.set(func(s *swState) { s.on[filterNotch] = true })
+	tg.ForgetPending()
+
+	close(tapBlock) // let NR's tap() return; the pass can reach filter 1
+	waitUntil(t, "idle", tg.idle)
+	if n := s.filterTapCount(filterNotch); n != 0 {
+		t.Fatalf("notch tapped %d times, want 0 (must not act on the pre-reset reading)", n)
+	}
+	if !s.get(filterNotch) {
+		t.Fatal("notch should already be on")
 	}
 }
 
