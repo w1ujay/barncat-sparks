@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Remote K3: run Sparks headless on a Raspberry Pi next to an Elecraft K3 (`-radio-model k3`) and connect home Sparks and N1MM (set to K4) to it over the tailnet like a K4 — CW from N1MM, knob/MIDI controls, and frequency/mode readback. See `docs/pi-setup.md`
+- Linux arm64 release build for the Pi
+
+### Fixed
+- RadioServer no longer drops commands it doesn't model: N1MM's IF/SB/DV polling and mode changes other than CW and DATA (USB, LSB, CW-REV, DATA-REV) now reach the radio, and their replies come back
+- Sub-receiver queries such as NB$, NR$, RT$, XT$ and NM$ no longer switch that function off on the main receiver when sent to RadioServer
+
 ## [0.3.2] - 2026-09-27
 
 ### Added

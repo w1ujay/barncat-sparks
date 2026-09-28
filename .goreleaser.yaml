@@ -1,7 +1,8 @@
 version: 2
 
 builds:
-  - main: ./cmd/barncat-sparks/
+  - id: windows
+    main: ./cmd/barncat-sparks/
     binary: barncat-sparks
     env:
       - CGO_ENABLED=0
@@ -17,9 +18,26 @@ builds:
       pre:
         - cmd: go-winres make
           dir: cmd/barncat-sparks/
+  - id: linux-arm64
+    main: ./cmd/barncat-sparks/
+    binary: barncat-sparks
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/ujay/barncat-sparks/internal/config.Version={{.Version}}
 
 archives:
-  - formats: [zip]
+  - id: windows
+    ids: [windows]
+    formats: [zip]
+  - id: linux
+    ids: [linux-arm64]
+    formats: [tar.gz]
 
 checksum:
   name_template: checksums.txt
