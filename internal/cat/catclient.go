@@ -28,6 +28,7 @@ type CATClient struct {
 	queryMu   sync.Mutex    // serializes query transactions on respCh (drain, send, await)
 	syncCmd   string        // guarded by queryMu: resync query after an abandoned rawQuery ("" = never resync)
 	desync    bool          // guarded by queryMu: a rawQuery ended without its reply, which may still arrive
+	lostSyncs []time.Time   // guarded by queryMu: resyncs that timed out, oldest first; their replies may still arrive
 	done      chan struct{} // closed when readLoop returns
 	doneOnce  sync.Once
 
@@ -330,26 +331,71 @@ func (c *CATClient) setSyncQuery(cmd string) {
 	c.syncCmd = cmd
 }
 
+// syncStaleWindow is how long a timed-out resync's reply is still expected.
+// Past it the reply is presumed lost (the radio was off), so a record can't
+// leave the client unable to resync.
+var syncStaleWindow = 5 * time.Second
+
+// pruneLostSyncsLocked forgets timed-out resyncs recorded more than
+// syncStaleWindow ago (records keep send order; their times need not be
+// sorted). Caller holds queryMu.
+func (c *CATClient) pruneLostSyncsLocked() {
+	cutoff := time.Now().Add(-syncStaleWindow)
+	kept := c.lostSyncs[:0]
+	for _, t := range c.lostSyncs {
+		if !t.Before(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	c.lostSyncs = kept
+}
+
 // resyncLocked runs before a query once an earlier one was abandoned (it
 // timed out or was rejected before its reply came), since that reply may
 // still be on its way and would satisfy this query instead. It sends syncCmd
 // and discards everything up to syncCmd's reply: the radio answers in order,
-// so every late reply precedes it. Caller holds queryMu. If no reply comes
-// within rawQueryTimeout, it fails with ErrQueryTimeout and desync stays set.
+// so every late reply precedes it. An earlier resync that timed out may also
+// still be answered, and its reply precedes this one's too, so each
+// syncCmd reply first uses up one such record (oldest first) and only the
+// next one ends the resync. It does not drain first: a drained stale reply
+// would leave its record behind. Caller holds queryMu. If no reply comes
+// within rawQueryTimeout, it fails with ErrQueryTimeout, desync stays set,
+// and this resync is recorded as lost.
 func (c *CATClient) resyncLocked(cmd string) error {
-	c.drainResponses()
+	c.pruneLostSyncsLocked()
 	if err := c.Send(c.syncCmd + ";"); err != nil {
 		return err
 	}
+	// The oldest record this attempt used up. If the attempt then times
+	// out, its own record takes that time: had the used-up reply really
+	// been this attempt's (a stale one lost when respCh was full), a fresh
+	// timestamp would keep every later resync one reply behind forever.
+	var consumed time.Time
 	timeout := time.After(rawQueryTimeout)
 	for {
 		select {
 		case resp := <-c.respCh:
-			if strings.HasPrefix(resp, c.syncCmd) {
-				c.desync = false
-				return nil
+			if !strings.HasPrefix(resp, c.syncCmd) {
+				continue
 			}
+			c.pruneLostSyncsLocked()
+			if len(c.lostSyncs) > 0 {
+				if consumed.IsZero() {
+					consumed = c.lostSyncs[0]
+				}
+				c.lostSyncs = c.lostSyncs[1:]
+				continue
+			}
+			// Ours. In-order delivery: every earlier reply has arrived.
+			c.lostSyncs = nil
+			c.desync = false
+			return nil
 		case <-timeout:
+			at := time.Now()
+			if !consumed.IsZero() {
+				at = consumed
+			}
+			c.lostSyncs = append(c.lostSyncs, at)
 			return fmt.Errorf("%s: no answer to resync %s: %w", cmd, c.syncCmd, ErrQueryTimeout)
 		}
 	}
@@ -370,6 +416,8 @@ func (c *CATClient) rawQuery(cmd string) (string, error) {
 	}
 	c.drainResponses()
 	if err := c.Send(cmd + ";"); err != nil {
+		// A partial or timed-out write may still reach the radio.
+		c.desync = true
 		return "", err
 	}
 	// "?;" names no command: it may be a late rejection of an earlier

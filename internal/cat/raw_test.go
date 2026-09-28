@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -215,5 +216,102 @@ func TestRawNoSyncQuerySendsNoID(t *testing.T) {
 	case got := <-cmds:
 		t.Fatalf("sent %q with no sync query set", got)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// Regression: a resync that timed out leaves its ID reply in flight; it must
+// not end a later resync early. The responder answers in order: the first
+// FA and the first two IDs late (after rawQueryTimeout), everything else at
+// once (the first FB 50 ms late), FB numbered by how many FBs it has seen.
+//
+//	Q1 FA: times out (its reply is late).
+//	Q2 FA: resync ID #1 times out.
+//	Q3 FB: resync ID #2; ID #1's late reply must not end it.
+//	Q4 FB: must return the reply to the FB it sent, not a late one.
+func TestRawLostResyncReplyDoesNotEndLaterResync(t *testing.T) {
+	late := rawQueryTimeout + 100*time.Millisecond
+	var ids, fbs atomic.Int32
+	fas := 0
+	ln, _ := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		switch cmd {
+		case "FA":
+			fas++
+			if fas == 1 {
+				time.Sleep(late)
+			}
+			fmt.Fprintf(conn, "FA%011d;", fas)
+		case "FB":
+			n := fbs.Add(1)
+			if n == 1 {
+				// A little after the ID before it, so a drain right after
+				// that ID can't hide a late FB reply.
+				time.Sleep(50 * time.Millisecond)
+			}
+			fmt.Fprintf(conn, "FB%011d;", n)
+		case "ID":
+			if ids.Add(1) <= 2 {
+				time.Sleep(late)
+			}
+			fmt.Fprint(conn, "ID017;")
+		}
+	})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	for i, cmd := range []string{"FA", "FA", "FB"} {
+		if _, err := c.Raw(cmd); !errors.Is(err, ErrQueryTimeout) {
+			t.Fatalf("Q%d Raw(%s) err = %v, want ErrQueryTimeout", i+1, cmd, err)
+		}
+	}
+	got, err := c.Raw("FB")
+	if err != nil {
+		t.Fatalf("Q4 Raw(FB): %v", err)
+	}
+	// Fence: the responder answers in order, so once FA is answered it has
+	// counted every FB sent before it.
+	if _, err := c.Raw("FA"); err != nil {
+		t.Fatalf("fence Raw(FA): %v", err)
+	}
+	if want := fmt.Sprintf("FB%011d", fbs.Load()); got != want {
+		t.Fatalf("Q4 Raw(FB) = %q, want the reply to its own FB %q", got, want)
+	}
+}
+
+// A lost-resync record past syncStaleWindow (the radio was off, so its reply
+// never came) must not make a resync skip its own reply.
+func TestRawExpiredLostResyncIgnored(t *testing.T) {
+	ln, cmds := mockCATResponder(t, func(cmd string, conn net.Conn) {
+		switch cmd {
+		case "FA":
+			fmt.Fprint(conn, "FA00014083999;")
+		case "ID":
+			fmt.Fprint(conn, "ID017;")
+		}
+	})
+	c := connectClient(t, ln)
+	c.setSyncQuery("ID")
+	c.queryMu.Lock()
+	c.desync = true
+	c.lostSyncs = []time.Time{time.Now().Add(-2 * syncStaleWindow)}
+	c.queryMu.Unlock()
+	if got, err := c.Raw("FA"); err != nil || got != "FA00014083999" {
+		t.Fatalf("Raw(FA) = %q, %v; want FA00014083999", got, err)
+	}
+	for _, want := range []string{"ID", "FA"} {
+		expectCmd(t, cmds, want)
+	}
+}
+
+// A query whose send fails may still have partly reached the radio, so the
+// next query resyncs.
+func TestRawSendFailureMarksDesync(t *testing.T) {
+	c := NewCATClient() // not connected: Send fails
+	c.setSyncQuery("ID")
+	if _, err := c.Raw("FA"); err == nil {
+		t.Fatal("Raw(FA) on an unconnected client succeeded")
+	}
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+	if !c.desync {
+		t.Fatal("desync not set after a failed send")
 	}
 }
