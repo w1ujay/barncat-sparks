@@ -77,6 +77,16 @@ Each save first copies the old settings into a `sparks-config-backups` folder be
 
 If Sparks can't read your settings file, it shows a warning and turns off Save and Start instead of writing blank settings over it. Closing and reopening Sparks clears a temporary read problem, and restoring a backup fixes a damaged file.
 
+### Updates
+
+At startup Sparks asks GitHub for the latest release and shows **Update available** at the top of the window if it's newer. Click the link for the release notes. Pre-releases are skipped, and with no internet nothing is shown.
+
+On Windows, stop Sparks and click **Update now**. Sparks downloads the zip, verifies it against the release's `checksums.txt`, replaces `barncat-sparks.exe`, and reopens with your settings. Only the program is replaced: the `README`, `CHANGELOG`, `LICENSE` and notices beside it stay as they were.
+
+To go back, close Sparks, delete `barncat-sparks.exe`, and rename `barncat-sparks.exe.old` to `barncat-sparks.exe`. Each update replaces the `.old` file, so only the previous version is kept. If you run a second copy from the same folder, close it before updating.
+
+The Raspberry Pi build doesn't update itself: copy the new release over by hand, as in [`docs/pi-setup.md`](docs/pi-setup.md).
+
 ### Running a Second Copy
 
 On Windows, only one copy can use a config at a time: opening a second shows "already running" and exits. To run a second copy on purpose, give it its own file with `-config`.

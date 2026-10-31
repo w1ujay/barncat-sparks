@@ -85,7 +85,10 @@ a{color:#569cd6}
 .station-note{font-size:0.85em;color:#888;min-height:1.3em;margin-bottom:6px}
 .station-note.error{color:#f48771}
 .update-bar{margin-bottom:12px;padding:6px 12px;background:#252526;border:1px solid #333;
-  border-radius:3px;font-size:0.9em}
+  border-radius:3px;font-size:0.9em;display:flex;align-items:center;gap:10px}
+.update-bar button{padding:3px 10px;font-size:0.9em}
+.update-note{color:#888}
+.update-note.error{color:#f48771}
 </style>
 </head>
 <body>
@@ -94,6 +97,8 @@ a{color:#569cd6}
 
 <div class="update-bar" id="updateBar" hidden>
   <a href="#" id="updateLink" onclick="openRelease(); return false"></a>
+  <button id="updateBtn" onclick="installUpdate()" hidden>Update now</button>
+  <span class="update-note" id="updateNote"></span>
 </div>
 
 <nav class="tabs">
@@ -856,6 +861,7 @@ function applyStatus(s) {
   setStatus(s.running, s.message);
   document.getElementById('startBtn').disabled = s.running;
   document.getElementById('stopBtn').disabled = !s.running;
+  renderUpdate();
 
   if (s.running && !statusPoll) {
     statusPoll = setInterval(pollStatus, 2000);
@@ -898,6 +904,9 @@ function renderAbout(about) {
 
 const UPDATE_POLL_MS = 2000;
 const UPDATE_POLL_TRIES = 12; // a little longer than the server's check timeout
+const UPDATE_WATCH_MS = 500;
+const UPDATE_STEPS = {downloading: 'Downloading…', installing: 'Installing…', restarting: 'Restarting…'};
+let updateInfo = null;  // last /api/update, once a newer release is known
 
 // pollUpdate waits for the startup check, which may finish after the page loads.
 async function pollUpdate(triesLeft = UPDATE_POLL_TRIES) {
@@ -912,8 +921,56 @@ async function pollUpdate(triesLeft = UPDATE_POLL_TRIES) {
     return;
   }
   if (!s.available) return;
+  updateInfo = s;
   document.getElementById('updateLink').textContent = 'Update available: v' + s.latest;
   document.getElementById('updateBar').hidden = false;
+  document.getElementById('updateBtn').hidden = !s.can_install;
+  renderUpdate();
+}
+
+// renderUpdate shows the update's progress, or why it can't start now.
+function renderUpdate() {
+  if (!updateInfo) return;
+  const state = updateInfo.state || '';
+  const busy = state in UPDATE_STEPS;
+  const failed = state === 'failed';
+  document.getElementById('updateBtn').disabled = busy || sparksRunning;
+  const note = document.getElementById('updateNote');
+  note.className = 'update-note' + (failed ? ' error' : '');
+  if (busy) note.textContent = UPDATE_STEPS[state];
+  else if (failed) note.textContent = 'Update failed: ' + updateInfo.error;
+  else if (sparksRunning && updateInfo.can_install) note.textContent = 'Stop Sparks to update';
+  else note.textContent = '';
+}
+
+async function installUpdate() {
+  if (sparksRunning) return;
+  if (!confirm('Update to v' + updateInfo.latest + '? Sparks will close and reopen. Save any settings changes first.')) return;
+  const resp = await fetch('/api/update/install', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+  });
+  if (!resp.ok) {
+    const data = await resp.json();
+    updateInfo = {...updateInfo, state: 'failed', error: data.error};
+    renderUpdate();
+    return;
+  }
+  updateInfo = {...updateInfo, state: 'downloading', error: ''};
+  renderUpdate();
+  watchUpdate();
+}
+
+// watchUpdate follows the update until it fails or Sparks exits.
+async function watchUpdate() {
+  let s;
+  try {
+    s = await (await fetch('/api/update')).json();
+  } catch(e) {
+    return; // the old copy has exited; the new one opens its own window
+  }
+  updateInfo = s;
+  renderUpdate();
+  if (s.state in UPDATE_STEPS) setTimeout(watchUpdate, UPDATE_WATCH_MS);
 }
 
 function openRelease() {
