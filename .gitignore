@@ -3,5 +3,6 @@ barncat-sparks
 *.log
 *.syso
 dist/
-docs/*.pdf
+docs/reference/
+sparks-config.json
 .worktrees/

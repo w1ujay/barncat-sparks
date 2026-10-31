@@ -9,8 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Remote K3: run Sparks headless on a Raspberry Pi next to an Elecraft K3 (`-radio-model k3`) and connect home Sparks and N1MM (set to K4) to it over the tailnet like a K4 — CW from N1MM, knob/MIDI controls, and frequency/mode readback. See `docs/pi-setup.md`
 - Linux arm64 release build for the Pi
+- MIDI Learn: CC and Note On mapping rows have a Learn button, as Knob rows do. Click it, then press or move the control on your DJ2GO2 or other MIDI controller within 10 seconds, and the row's type, channel and number fill in. It works running or stopped, and a press used for Learn doesn't run that control's action
+- On Windows, opening Sparks a second time with the same config now shows "already running" and exits, so a second window can't save over your settings. A copy using its own `-config` file still runs
 
 ### Fixed
+- Band Up and Band Down now change band on the K4. They were sending `BU;` and `BD;`, which the K4 doesn't have, instead of `BN+;` and `BN-;`
 - RadioServer no longer drops commands it doesn't model: N1MM's IF/SB/DV polling and mode changes other than CW and DATA (USB, LSB, CW-REV, DATA-REV) now reach the radio, and their replies come back
 - Sub-receiver queries such as NB$, NR$, RT$, XT$ and NM$ no longer switch that function off on the main receiver when sent to RadioServer
 - RadioServer answers a client's `AI;` with `AI0;` and no longer forwards `AI` sets to the radio, so a logger asking for auto-info can't make the K4 push unsolicited replies into Sparks's session
