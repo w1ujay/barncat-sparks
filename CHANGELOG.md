@@ -10,9 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Remote K3: run Sparks headless on a Raspberry Pi next to an Elecraft K3 (`-radio-model k3`) and connect home Sparks and N1MM (set to K4) to it over the tailnet like a K4 — CW from N1MM, knob/MIDI controls, and frequency/mode readback. See `docs/pi-setup.md`
 - Linux arm64 release build for the Pi
 - MIDI Learn: CC and Note On mapping rows have a Learn button, as Knob rows do. Click it, then press or move the control on your DJ2GO2 or other MIDI controller within 10 seconds, and the row's type, channel and number fill in. It works running or stopped, and a press used for Learn doesn't run that control's action
+- Config backups: each save keeps the previous settings in `sparks-config-backups` (last 20), with a Restore control at the bottom of Settings
 - On Windows, opening Sparks a second time with the same config now shows "already running" and exits, so a second window can't save over your settings. A copy using its own `-config` file still runs
 
+### Security
+- Built with Go 1.27.3, which fixes standard-library vulnerabilities reported by govulncheck
+- The local web UI now refuses requests that didn't come from its own page, so a website open on the same PC can't change settings, start or stop Sparks, or read the K4 password and hearth token
+
 ### Fixed
+- Saving settings can no longer leave a damaged config: the new file is written separately and swapped in
+- If the config can't be read, Sparks now warns and blocks Save and Start, instead of showing blank settings that could overwrite your real ones
 - Band Up and Band Down now change band on the K4. They were sending `BU;` and `BD;`, which the K4 doesn't have, instead of `BN+;` and `BN-;`
 - RadioServer no longer drops commands it doesn't model: N1MM's IF/SB/DV polling and mode changes other than CW and DATA (USB, LSB, CW-REV, DATA-REV) now reach the radio, and their replies come back
 - Sub-receiver queries such as NB$, NR$, RT$, XT$ and NM$ no longer switch that function off on the main receiver when sent to RadioServer

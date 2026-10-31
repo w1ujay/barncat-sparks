@@ -5,4 +5,5 @@ barncat-sparks
 dist/
 docs/reference/
 sparks-config.json
+sparks-config-backups/
 .worktrees/

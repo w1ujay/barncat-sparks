@@ -56,6 +56,7 @@ internal/
     midi_list_other.go       # EnumerateMIDIDevices (stub)
   config/                    # Configuration & metadata
     config.go                # AppConfig, load/save, ListSerialPorts
+    backup.go                # writeConfig (backup + atomic swap), ListBackups, RestoreBackup
     actions.go               # ActionRegistry, ActionDef
     about.go                 # Version, contributors
   hearth/                    # lempster-hearth control client (stdlib only)
@@ -73,6 +74,7 @@ internal/
     hearth.go                # /api/hearth/* — hearth status + K4/power-save/WoL controls
     knob.go                  # /api/knob/* — knob status and Learn; knob start in Start
     midilearn.go             # /api/midi/learn — MIDI Learn, via the driver or LearnOnce
+    backup.go                # localOnly request guard; /api/config/backups and /restore
     instance.go              # Per-config single-instance lock name (instance_windows.go: named mutex; instance_other.go: stub)
     webui.html               # Single-page web UI (go:embed)
     gui_windows.go           # waitForGUI (WebView2)

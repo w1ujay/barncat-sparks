@@ -254,9 +254,15 @@ a{color:#569cd6}
 </div>
 -->
 
+<div class="learn-msg" id="configError" style="display:none"></div>
 <div class="btn-bar">
   <button onclick="doSave()">Save Settings</button>
   <span class="save-msg" id="saveMsg"></span>
+</div>
+<div class="form-row" id="backupRow" style="display:none">
+  <label for="backupSelect">Backups</label>
+  <select id="backupSelect"></select>
+  <button class="secondary" onclick="restoreBackup()">Restore</button>
 </div>
 
 <div class="about" id="aboutSection"></div>
@@ -310,6 +316,7 @@ async function init() {
   knobEnabled = !!cfg.knob_enabled;
   renderMIDIDevices();
   refreshKnobStatus();
+  refreshBackups();
   document.getElementById('catAddr').value = cfg.cat_address || '';
   document.getElementById('catPassword').value = cfg.cat_password || '';
   document.getElementById('tcpMode').value = cfg.cat_password ? 'k4auth' : 'plain';
@@ -759,6 +766,47 @@ function gatherConfig() {
   };
 }
 
+// backupLabel turns a backup's file name into its date and time.
+function backupLabel(name) {
+  const m = name.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\./);
+  return m ? m[1]+'-'+m[2]+'-'+m[3]+' '+m[4]+':'+m[5]+':'+m[6] : name;
+}
+
+async function refreshBackups() {
+  const resp = await fetch('/api/config/backups');
+  if (!resp.ok) return;
+  const data = await resp.json();
+  const err = document.getElementById('configError');
+  err.textContent = data.config_error;
+  err.style.display = data.config_error ? '' : 'none';
+  document.getElementById('backupRow').style.display = data.backups.length ? '' : 'none';
+  const sel = document.getElementById('backupSelect');
+  sel.innerHTML = '';
+  for (const name of data.backups) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = backupLabel(name);
+    sel.appendChild(opt);
+  }
+}
+
+async function restoreBackup() {
+  const sel = document.getElementById('backupSelect');
+  const when = sel.options[sel.selectedIndex].textContent;
+  if (!confirm('Replace your settings with the backup from ' + when + '? Your current settings are backed up first.')) return;
+  const resp = await fetch('/api/config/restore', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: sel.value})
+  });
+  if (resp.ok) {
+    location.reload();
+  } else {
+    const data = await resp.json();
+    setSaveMsg('Restore failed: ' + data.error, true);
+  }
+}
+
 async function doSave() {
   const cfg = gatherConfig();
   const resp = await fetch('/api/config', {
@@ -769,6 +817,7 @@ async function doSave() {
   if (resp.ok) {
     setSaveMsg('Settings saved', false);
     startHearth(cfg.hearth_url);
+    refreshBackups();
   } else {
     const text = await resp.text();
     setSaveMsg('Save failed: ' + text, true);

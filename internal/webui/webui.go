@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -30,6 +32,7 @@ type WebUI struct {
 	mu           sync.Mutex
 	config       *config.AppConfig
 	cfgPath      string
+	cfgLoadErr   string // why the config could not be read; saving stays off until a restore
 	running      bool
 	statusMsg    string
 	cat          cat.Radio
@@ -68,21 +71,29 @@ func RunWebUI(configPath string) {
 	}
 
 	cfg, err := config.LoadAppConfig(configPath)
+	var cfgLoadErr string
 	if err != nil {
 		cfg = config.DefaultAppConfig()
+		if !errors.Is(err, fs.ErrNotExist) {
+			cfgLoadErr = err.Error()
+			log.Printf("webui: %v", err)
+		}
 	}
 
 	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", config.Version)
 
 	w := &WebUI{
-		config:    cfg,
-		cfgPath:   configPath,
-		statusMsg: "Stopped",
+		config:     cfg,
+		cfgPath:    configPath,
+		cfgLoadErr: cfgLoadErr,
+		statusMsg:  "Stopped",
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", w.handleIndex)
 	mux.HandleFunc("/api/config", w.handleConfig)
+	mux.HandleFunc("/api/config/backups", w.handleConfigBackups)
+	mux.HandleFunc("/api/config/restore", w.handleConfigRestore)
 	mux.HandleFunc("/api/status", w.handleStatus)
 	mux.HandleFunc("/api/start", w.handleStart)
 	mux.HandleFunc("/api/stop", w.handleStop)
@@ -111,7 +122,7 @@ func RunWebUI(configPath string) {
 	addr := listener.Addr().String()
 	url := "http://" + addr
 
-	w.server = &http.Server{Handler: mux}
+	w.server = &http.Server{Handler: localOnly(addr, mux)}
 
 	log.Printf("webui: listening on %s", url)
 
@@ -171,6 +182,11 @@ func (w *WebUI) handleConfig(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.mu.Lock()
+		if msg := w.configErrorMsg(); msg != "" {
+			w.mu.Unlock()
+			http.Error(rw, msg, http.StatusConflict)
+			return
+		}
 		w.config = &cfg
 		w.mu.Unlock()
 		if err := config.SaveAppConfig(w.cfgPath, &cfg); err != nil {
@@ -215,6 +231,13 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 
 	if w.running {
 		writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg})
+		return
+	}
+
+	// Start saves too, so a config that couldn't be read must stop it here.
+	if msg := w.configErrorMsg(); msg != "" {
+		w.statusMsg = msg
+		writeJSON(rw, statusResponse{Running: false, Message: msg})
 		return
 	}
 
