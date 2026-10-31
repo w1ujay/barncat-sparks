@@ -198,6 +198,8 @@ Under Options, **Route MIDI volume to QK4** sends MIDI volume to a QK4 instead o
 
 ## Remote K3
 
+> **Not yet tested on a real K3.** This feature is built and passes its automated tests, but it hasn't been tried on the air.
+
 Sparks can run headless on a Raspberry Pi next to an Elecraft K3 and present it over the tailnet as a K4, so home Sparks and N1MM connect to it the same way:
 
 ```bash

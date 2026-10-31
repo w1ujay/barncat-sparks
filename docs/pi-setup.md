@@ -1,5 +1,9 @@
 # Sparks on the k3-site Pi (remote K3)
 
+> **Not yet tested on a real K3.** Treat this guide as a plan until the checks below pass.
+
+Replace `<pi-tailnet-ip>` throughout with your Pi's tailnet address, including in `deploy/barncat-sparks.service`. The service won't start until you do.
+
 The Pi runs Sparks headless next to the K3 and serves K4-compatible CAT on
 the tailnet. Home Sparks connects to it as if it were a K4 (plain TCP,
 `<pi-tailnet-ip>:9400`); N1MM stays set to K4.
