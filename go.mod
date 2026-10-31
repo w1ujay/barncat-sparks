@@ -2,7 +2,7 @@ module github.com/ujay/barncat-sparks
 
 go 1.27.0
 
-toolchain go1.27.1
+toolchain go1.27.3
 
 require (
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
