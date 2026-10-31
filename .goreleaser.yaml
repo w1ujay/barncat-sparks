@@ -35,9 +35,19 @@ archives:
   - id: windows
     ids: [windows]
     formats: [zip]
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - THIRD_PARTY_NOTICES*
   - id: linux
     ids: [linux-arm64]
     formats: [tar.gz]
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - THIRD_PARTY_NOTICES*
 
 checksum:
   name_template: checksums.txt

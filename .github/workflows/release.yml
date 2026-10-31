@@ -21,7 +21,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install go-winres
-        run: go install github.com/tc-hib/go-winres@latest
+        run: go install github.com/tc-hib/go-winres@v0.3.3
 
       - uses: goreleaser/goreleaser-action@v7
         with:
