@@ -84,6 +84,11 @@ func buildMappingIndex(cfg *MIDIConfig) map[midiKey]*MIDIMapping {
 // handleMIDIEvent processes a raw MIDI message from the platform driver and
 // hands mapped messages to the executor.
 func (d *MIDIDriver) handleMIDIEvent(status, data1, data2 byte) {
+	if l, ok := learnedFrom(status, data1, data2); ok && d.learn.offer(l) {
+		log.Printf("MIDI: learned %s ch=%d number=%d", l.Type, l.Channel, l.Number)
+		return
+	}
+
 	msgType := status & 0xF0
 	channel := status & 0x0F
 

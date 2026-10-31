@@ -475,7 +475,9 @@ function renderMappings() {
         typeSelect(i, m.type) +
         '<span class="mapping-field"><label>Ch</label><input type="number" min="0" max="15" value="'+(m.channel||0)+'" onchange="mappings['+i+'].channel=parseInt(this.value)||0"></span>' +
         '<span class="mapping-field"><label>#</label><input type="number" min="0" max="127" value="'+(m.number||0)+'" onchange="mappings['+i+'].number=parseInt(this.value)||0"></span>' +
-        optsFields(i, m.action, m.opts);
+        '<button class="secondary" id="learnBtn'+i+'" onclick="learnMIDI('+i+')"' + (pendingLearns.has(m) ? ' disabled>Move the control…' : '>Learn') + '</button>' +
+        optsFields(i, m.action, m.opts) +
+        '<span class="learn-msg" id="learnMsg'+i+'"></span>';
     }
     html += '<div class="mapping-card">' +
       '<div class="mapping-header">' +
@@ -567,7 +569,27 @@ function cancelLearn(row) {
   }
 }
 
-async function learnKnob(idx) {
+function learnKnob(idx) {
+  return runLearn(idx, '/api/knob/learn', {}, 'Move the knob…', (row, data) => {
+    row.channel = 3;
+    row.number = data.usage;
+  });
+}
+
+function learnMIDI(idx) {
+  return runLearn(idx, '/api/midi/learn', {devices: midiDevices}, 'Move the control…', (row, data) => {
+    row.type = data.type;
+    row.channel = data.channel;
+    row.number = data.number;
+    // Two rows on one control: the MIDI index keeps only the later row.
+    const other = mappings.findIndex(m => m !== row && m.type === row.type && m.channel === row.channel && m.number === row.number);
+    return other >= 0 ? 'Also on row ' + (other + 1) + ' — only one will work' : '';
+  });
+}
+
+// runLearn waits on url for the next control and hands the reply to apply,
+// which fills in the row and may return a note to show on it.
+async function runLearn(idx, url, body, waitText, apply) {
   const row = mappings[idx];
   if (pendingLearns.has(row)) return;
   const ctl = new AbortController();
@@ -575,7 +597,7 @@ async function learnKnob(idx) {
   const btn = document.getElementById('learnBtn' + idx);
   const msg = document.getElementById('learnMsg' + idx);
   btn.disabled = true;
-  btn.textContent = 'Move the knob…';
+  btn.textContent = waitText;
   msg.textContent = '';
   // The row may have moved while we waited, so find its elements again.
   const showMsg = text => {
@@ -583,11 +605,12 @@ async function learnKnob(idx) {
     if (m) m.textContent = text;
   };
   let learned = false;
+  let note = '';
   try {
-    const resp = await fetch('/api/knob/learn', {
+    const resp = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: '{}',
+      body: JSON.stringify(body),
       signal: ctl.signal
     });
     const data = await resp.json();
@@ -596,8 +619,7 @@ async function learnKnob(idx) {
       showMsg(data.error || ('Learn failed (' + resp.status + ')'));
       return;
     }
-    row.channel = 3;
-    row.number = data.usage;
+    note = apply(row, data) || '';
     learned = true;
   } catch (e) {
     if (pendingLearns.get(row) === ctl) showMsg('Learn failed: ' + e.message);
@@ -609,7 +631,10 @@ async function learnKnob(idx) {
         b.disabled = false;
         b.textContent = 'Learn';
       }
-      if (learned) renderMappings();
+      if (learned) {
+        renderMappings();
+        showMsg(note);
+      }
     }
   }
 }
