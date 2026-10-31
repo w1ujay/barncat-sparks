@@ -40,6 +40,7 @@ type WebUI struct {
 	knobLearnMu  sync.Mutex         // one Learn at a time
 	wk           *keyer.Winkeyer
 	midiDrv      *midi.MIDIDriver
+	midiLearnMu  sync.Mutex // one Learn at a time
 	catServer    *cat.CATServer
 	radioServer  *cat.RadioServer
 	lp100        *lp100a.Driver
@@ -54,12 +55,23 @@ type WebUI struct {
 
 // RunWebUI starts the web UI on a free localhost port and opens the browser.
 func RunWebUI(configPath string) {
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
+
+	// Checked before the config is read, so a refused copy can't save over it.
+	// A failed check only logs: it must not keep the operator off the air.
+	if ok, err := acquireInstance(configPath); err != nil {
+		log.Printf("webui: single-instance check failed: %v", err)
+	} else if !ok {
+		log.Print("webui: already running with this config, exiting")
+		showAlreadyRunning()
+		return
+	}
+
 	cfg, err := config.LoadAppConfig(configPath)
 	if err != nil {
 		cfg = config.DefaultAppConfig()
 	}
 
-	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", config.Version)
 
 	w := &WebUI{
@@ -80,6 +92,7 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/control-names", w.handleControlNames)
 	mux.HandleFunc("/api/knob/status", w.handleKnobStatus)
 	mux.HandleFunc("/api/knob/learn", w.handleKnobLearn)
+	mux.HandleFunc("/api/midi/learn", w.handleMIDILearn)
 	mux.HandleFunc("/api/trace", w.handleTrace)
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)

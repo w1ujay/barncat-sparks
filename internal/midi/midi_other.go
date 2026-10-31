@@ -3,6 +3,7 @@
 package midi
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -27,6 +28,7 @@ type MIDIDriver struct {
 	index     map[midiKey]*MIDIMapping
 	done      chan struct{}
 	events    *eventQueue
+	learn     learner
 }
 
 // NewMIDIDriver creates a new MIDI driver that runs mapped actions on exec.
@@ -45,6 +47,11 @@ func ListMIDIDevices() error {
 	fmt.Println("MIDI device listing is not supported on this platform.")
 	fmt.Println("MIDI support requires Windows (winmm.dll).")
 	return nil
+}
+
+// LearnOnce is not supported on this platform.
+func LearnOnce(ctx context.Context, devices []string) (Learned, error) {
+	return Learned{}, ErrUnsupported
 }
 
 // Run is not supported on non-Windows platforms.

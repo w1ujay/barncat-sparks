@@ -3,6 +3,7 @@
 package midi
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -70,6 +71,7 @@ type MIDIDriver struct {
 	events    *eventQueue
 	devices   []openDevice // active devices
 	cb        uintptr      // Windows callback (reused for reconnect)
+	learn     learner
 }
 
 // NewMIDIDriver creates a new MIDI driver that runs mapped actions on exec.
@@ -185,40 +187,89 @@ func (d *MIDIDriver) Run() error {
 
 // openDevice tries to open a MIDI device by name. Returns true if successful.
 func (d *MIDIDriver) openDevice(name string) bool {
-	count, _, _ := midiInGetNumDevs.Call()
-	if count == 0 {
+	hMidiIn, ok := openInput(name, d.cb)
+	if !ok {
 		return false
 	}
+	d.devices = append(d.devices, openDevice{name: name, handle: hMidiIn})
+	return true
+}
 
-	portIdx := d.findDevice(name, count)
+// openInput opens and starts the input matching name, sending its messages
+// to cb.
+func openInput(name string, cb uintptr) (uintptr, bool) {
+	count, _, _ := midiInGetNumDevs.Call()
+	if count == 0 {
+		return 0, false
+	}
+
+	portIdx := findDevice(name, count)
 	if portIdx < 0 {
 		log.Printf("MIDI: device %q not found", name)
-		return false
+		return 0, false
 	}
 
 	var hMidiIn uintptr
 	ret, _, _ := midiInOpen.Call(
 		uintptr(unsafe.Pointer(&hMidiIn)),
 		uintptr(portIdx),
-		d.cb,
+		cb,
 		0,
 		callbackFunction,
 	)
 	if ret != 0 {
 		log.Printf("MIDI: midiInOpen failed for %q (MMRESULT=%d)", name, ret)
-		return false
+		return 0, false
 	}
 
 	ret, _, _ = midiInStart.Call(hMidiIn)
 	if ret != 0 {
 		midiInClose.Call(hMidiIn)
 		log.Printf("MIDI: midiInStart failed for %q (MMRESULT=%d)", name, ret)
-		return false
+		return 0, false
 	}
 
-	d.devices = append(d.devices, openDevice{name: name, handle: hMidiIn})
 	log.Printf("MIDI: listening on %q (port %d)", name, portIdx)
-	return true
+	return hMidiIn, true
+}
+
+// LearnOnce's callback is created once: Windows callbacks from
+// syscall.NewCallback are never freed, and Learn can run many times.
+var (
+	onceLearner learner
+	onceCB      = sync.OnceValue(func() uintptr {
+		return syscall.NewCallback(func(hMidiIn, wMsg, dwInstance, dwParam1, dwParam2 uintptr) uintptr {
+			if wMsg == mimData {
+				status, data1, data2 := byte(dwParam1&0xFF), byte((dwParam1>>8)&0xFF), byte((dwParam1>>16)&0xFF)
+				if l, ok := learnedFrom(status, data1, data2); ok {
+					onceLearner.offer(l)
+				}
+			}
+			return 0
+		})
+	})
+)
+
+// LearnOnce opens devices just long enough to catch the next press or move.
+// It is for when no driver holds them, since a device opens only once.
+func LearnOnce(ctx context.Context, devices []string) (Learned, error) {
+	var handles []uintptr
+	defer func() {
+		for _, h := range handles {
+			midiInStop.Call(h)
+			midiInReset.Call(h)
+			midiInClose.Call(h)
+		}
+	}()
+	for _, name := range devices {
+		if h, ok := openInput(name, onceCB()); ok {
+			handles = append(handles, h)
+		}
+	}
+	if len(handles) == 0 {
+		return Learned{}, ErrNotConnected
+	}
+	return onceLearner.wait(ctx, nil)
 }
 
 // handleDisconnect processes a MIM_CLOSE event for a device.
@@ -261,7 +312,7 @@ func (d *MIDIDriver) tryReconnect(disconnected *[]string, ticker **time.Ticker, 
 }
 
 // findDevice searches system MIDI devices for a name matching the substring.
-func (d *MIDIDriver) findDevice(name string, count uintptr) int {
+func findDevice(name string, count uintptr) int {
 	for i := uintptr(0); i < count; i++ {
 		var caps midiInCapsW
 		ret, _, _ := midiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
