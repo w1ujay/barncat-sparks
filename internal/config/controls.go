@@ -11,7 +11,7 @@ var ControlMaps = map[string]ControlMap{
 	"DJ2GO2": dj2go2Controls,
 }
 
-// Numark DJ2GO2 — derived from Mixxx controller preset (docs/Numark-DJ2Go2-midi-map.xml).
+// Numark DJ2GO2 — derived from the Mixxx controller preset.
 // Deck A = channel 0, Deck B = channel 1, Master/Library = channel 15.
 // Pad modes use channels 4 (Deck A) and 5 (Deck B).
 var dj2go2Controls = ControlMap{

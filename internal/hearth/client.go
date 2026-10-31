@@ -1,8 +1,7 @@
 // Package hearth is a client for lempster-hearth's control API: the cabin K4's
 // power and Starlink power-save. It talks to the Pi over the tailnet and, when
 // the Pi cannot be reached at all, falls back to the hosted replica for status
-// and for queueing a power-save change. See
-// docs/plans/2026-09-13-hearth-control-design.md.
+// and for queueing a power-save change.
 package hearth
 
 import (
