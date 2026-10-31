@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
+	"github.com/ujay/barncat-sparks/internal/update"
 )
 
 //go:embed webui.html
@@ -48,6 +50,25 @@ type WebUI struct {
 	radioServer  *cat.RadioServer
 	lp100        *lp100a.Driver
 	server       *http.Server
+	updater      *update.Client
+	openURL      func(string) // opens a page in the default browser
+	selfUpdate   bool         // this build can update itself (Windows)
+	exePath      func() (string, error)
+	restart      func(exe string) error // starts the new version
+	exit         func()                 // closes this copy after an update
+	updating     bool                   // an update holds Start off (under mu)
+
+	// Update check and progress (guarded by updateMu, separate from main mu,
+	// which Start holds while it connects to the radio). When both are needed,
+	// mu comes first.
+	updateMu      sync.Mutex
+	updateChecked bool
+	updateRelease *update.Release // nil unless a newer release exists
+	updateState   string
+	updateErr     string
+
+	swapMu     sync.Mutex // held across swapping the exe and starting the new copy
+	swapClosed bool       // Sparks is closing: no swap may start
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
 	decodeMu      sync.Mutex
@@ -82,11 +103,23 @@ func RunWebUI(configPath string) {
 
 	log.Printf("sparks %s: WinKeyer emulator & MIDI controller for K4", config.Version)
 
+	quit := make(chan struct{})
 	w := &WebUI{
 		config:     cfg,
 		cfgPath:    configPath,
 		cfgLoadErr: cfgLoadErr,
 		statusMsg:  "Stopped",
+		updater:    &update.Client{},
+		openURL:    openBrowser,
+		selfUpdate: runtime.GOOS == "windows",
+		exePath:    runningExe,
+		restart: func(exe string) error {
+			return update.StartNewCopy(exe, os.Args[1:], os.Getpid())
+		},
+		exit: func() {
+			close(quit)
+			time.AfterFunc(updateExitGrace, func() { os.Exit(0) })
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -108,6 +141,9 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
 	mux.HandleFunc("/api/about", w.handleAbout)
+	mux.HandleFunc("/api/update", w.handleUpdateStatus)
+	mux.HandleFunc("/api/update/open", w.handleUpdateOpen)
+	mux.HandleFunc("/api/update/install", w.handleUpdateInstall)
 	mux.HandleFunc("/api/hearth/status", w.handleHearthStatus)
 	mux.HandleFunc("/api/hearth/test", w.handleHearthTest)
 	mux.HandleFunc("/api/hearth/k4", w.handleHearthK4)
@@ -135,7 +171,9 @@ func RunWebUI(configPath string) {
 		close(serverDone)
 	}()
 
-	waitForGUI(url, "BarnCat Sparks "+config.Version, 760, 900) // blocks until exit
+	go w.checkForUpdate(context.Background())
+
+	waitForGUI(url, "BarnCat Sparks "+config.Version, 760, 900, quit) // blocks until exit
 
 	w.Shutdown()
 	<-serverDone
@@ -231,6 +269,11 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 
 	if w.running {
 		writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg})
+		return
+	}
+
+	if w.updating {
+		writeJSON(rw, statusResponse{Running: false, Message: "Sparks is updating"})
 		return
 	}
 
@@ -493,6 +536,7 @@ func (w *WebUI) stopLocked() {
 
 // Shutdown gracefully stops the web UI server and all subsystems.
 func (w *WebUI) Shutdown() {
+	w.closeUpdates()
 	w.mu.Lock()
 	w.stopLocked()
 	w.mu.Unlock()
