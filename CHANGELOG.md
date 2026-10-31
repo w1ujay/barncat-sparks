@@ -14,11 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Update check: at startup Sparks asks GitHub for the latest release and shows an "Update available" link if it's newer. It shows nothing if there's no internet
 - **Offer pre-release updates** in Settings, off by default: turn it on, after a warning, to be offered test builds as well as stable releases from the next startup
 - One-click update on Windows: while Sparks is stopped, **Update now** downloads the release, verifies it against `checksums.txt`, swaps the program and reopens Sparks. The previous version stays beside it as `barncat-sparks.exe.old`, and the old program is put back if the new one can't be installed or started
+- The Operate tab shows whether the K4 or K3 is answering: Connected, Not responding or Connection lost. Sparks asks the radio for its frequency every 5 seconds while running, so a radio that's turned off shows up even when the link stays open
 - On Windows, opening Sparks a second time with the same config now shows "already running" and exits, so a second window can't save over your settings. A copy using its own `-config` file still runs
 
 ### Security
 - Built with Go 1.27.3, which fixes standard-library vulnerabilities reported by govulncheck
 - The local web UI now refuses requests that didn't come from its own page, so a website open on the same PC can't change settings, start or stop Sparks, or read the K4 password and hearth token
+
+### Changed
+- Hearth is now optional and out of the way: the Station section only appears once a hearth URL is saved, and its settings moved into a collapsed group in Settings
 
 ### Fixed
 - Saving settings can no longer leave a damaged config: the new file is written separately and swapped in

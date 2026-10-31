@@ -84,6 +84,10 @@ a{color:#569cd6}
 .station-source.warn{color:#d7ba7d}
 .station-note{font-size:0.85em;color:#888;min-height:1.3em;margin-bottom:6px}
 .station-note.error{color:#f48771}
+.radio-link{margin-top:8px;font-size:0.9em;color:#888}
+.radio-link.connected{color:#4ec9b0}
+.radio-link.no_reply{color:#d7ba7d}
+.radio-link.lost{color:#f48771}
 .update-bar{margin-bottom:12px;padding:6px 12px;background:#252526;border:1px solid #333;
   border-radius:3px;font-size:0.9em;display:flex;align-items:center;gap:10px}
 .update-bar button{padding:3px 10px;font-size:0.9em}
@@ -114,12 +118,11 @@ a{color:#569cd6}
 </div>
 
 <div class="status-bar" id="statusBar">Status: Stopped</div>
+<div class="radio-link" id="radioLink">Radio: Not connected</div>
 
+<div id="stationSection" hidden>
 <h2>Station</h2>
-<div class="station-note" id="stationHint" hidden>
-  No hearth configured. <a href="#" onclick="showTab('settings'); return false">Set up hearth in Settings</a>
-</div>
-<div id="stationPanel" hidden>
+<div id="stationPanel">
   <div class="station-source" id="stationSource">—</div>
   <div class="station-row">
     <span class="station-label">K4</span>
@@ -138,6 +141,7 @@ a{color:#569cd6}
   </div>
   <div id="laptopRows"></div>
   <div class="station-note" id="stationMsg"></div>
+</div>
 </div>
 
 </div>
@@ -208,14 +212,15 @@ a{color:#569cd6}
   <input id="keyerSpeed" type="number" min="5" max="99" placeholder="25">
 </div>
 
-<h2>Station setup</h2>
+<details id="hearthDetails">
+<summary>Station control with lempster-hearth (optional)</summary>
 <div class="form-row">
   <label for="hearthUrl">Hearth URL</label>
-  <input id="hearthUrl" type="text" placeholder="http://hearth.example:8123">
+  <input id="hearthUrl" type="text" placeholder="http://&lt;hearth-host&gt;:8123">
 </div>
 <div class="form-row">
   <label for="hearthReplicaUrl">Replica URL</label>
-  <input id="hearthReplicaUrl" type="text" placeholder="https://replica.example (optional)">
+  <input id="hearthReplicaUrl" type="text" placeholder="https://&lt;replica-host&gt; (optional)">
 </div>
 <div class="form-row">
   <label for="hearthSite">Site</label>
@@ -229,6 +234,7 @@ a{color:#569cd6}
   </div>
 </div>
 <div class="station-note" id="hearthIdentity"></div>
+</details>
 
 <h2>MIDI</h2>
 <div id="midiDevicesContainer"></div>
@@ -343,6 +349,7 @@ async function init() {
   document.getElementById('ampUrl').value = cfg.amp_url || '';
   document.getElementById('updatePrereleases').checked = !!cfg.update_prereleases;
   document.getElementById('hearthUrl').value = cfg.hearth_url || '';
+  document.getElementById('hearthDetails').open = !!cfg.hearth_url;
   document.getElementById('hearthReplicaUrl').value = cfg.hearth_replica_url || '';
   document.getElementById('hearthToken').value = cfg.hearth_token || '';
   document.getElementById('hearthSite').value = cfg.hearth_site || '';
@@ -864,6 +871,7 @@ function applyStatus(s) {
   setStatus(s.running, s.message);
   document.getElementById('startBtn').disabled = s.running;
   document.getElementById('stopBtn').disabled = !s.running;
+  renderRadio(s);
   renderUpdate();
 
   if (s.running && !statusPoll) {
@@ -881,6 +889,22 @@ async function pollStatus() {
     applyStatus(s);
     if (s.running && knobEnabled) refreshKnobStatus();
   } catch(e) { /* server may be gone */ }
+}
+
+const RADIO_TEXT = {
+  off: 'Not connected',
+  checking: 'Checking…',
+  connected: 'Connected',
+  no_reply: 'Not responding',
+  lost: 'Connection lost. Stop, then Start to reconnect'
+};
+
+// renderRadio shows whether the K4 or K3 is answering, with or without hearth.
+function renderRadio(s) {
+  const state = s.running && s.radio in RADIO_TEXT ? s.radio : 'off';
+  const el = document.getElementById('radioLink');
+  el.textContent = 'Radio: ' + RADIO_TEXT[state];
+  el.className = 'radio-link ' + state;
 }
 
 function setStatus(running, msg) {
@@ -1032,8 +1056,7 @@ function startHearth(url) {
   lastLaptopSig = null; // force a re-render for the new station's rows
   if (wolTimer) { clearInterval(wolTimer); wolTimer = null; }
   resetStationView();
-  document.getElementById('stationPanel').hidden = !url;
-  document.getElementById('stationHint').hidden = !!url;
+  document.getElementById('stationSection').hidden = !url;
   if (!url) return;
   fetchHearthIdentity().then(renderHearthControls);
   pollHearth();

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ujay/barncat-sparks/internal/cat"
@@ -38,6 +39,8 @@ type WebUI struct {
 	running      bool
 	statusMsg    string
 	cat          cat.Radio
+	radioState   atomic.Value       // string: what watchRadio last saw
+	radioCancel  context.CancelFunc // ends watchRadio
 	qk4VolumeCat *cat.CATClient     // optional QK4 connection for volume routing
 	exec         *controls.Executor // runs actions for MIDI (and the knob)
 	knob         knobRunner         // the USB knob reader while Started
@@ -243,11 +246,12 @@ type statusResponse struct {
 	Message      string `json:"message"`
 	RTTYMode     bool   `json:"rtty_mode"`
 	DecodeActive bool   `json:"decode_active"`
+	Radio        string `json:"radio,omitempty"`
 }
 
 func (w *WebUI) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Lock()
-	resp := statusResponse{Running: w.running, Message: w.statusMsg + w.knobStatusLocked()}
+	resp := statusResponse{Running: w.running, Message: w.statusMsg + w.knobStatusLocked(), Radio: w.statusRadioLocked()}
 	if w.wk != nil {
 		resp.RTTYMode = w.wk.IsRTTY()
 	}
@@ -459,7 +463,12 @@ func (w *WebUI) handleStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.statusMsg = status
 
-	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg + w.knobStatusLocked()})
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
+	w.radioCancel = cancelWatch
+	w.setRadioLink(radioChecking)
+	go w.watchRadio(watchCtx, client, radioPollInterval)
+
+	writeJSON(rw, statusResponse{Running: true, Message: w.statusMsg + w.knobStatusLocked(), Radio: w.statusRadioLocked()})
 }
 
 func (w *WebUI) handleStop(rw http.ResponseWriter, r *http.Request) {
@@ -477,6 +486,11 @@ func (w *WebUI) handleStop(rw http.ResponseWriter, r *http.Request) {
 
 // stopLocked shuts down all subsystems. Must be called with w.mu held.
 func (w *WebUI) stopLocked() {
+	if w.radioCancel != nil {
+		w.radioCancel()
+		w.radioCancel = nil
+	}
+
 	// Stop decode goroutine and disable radio's text decoder
 	w.decodeMu.Lock()
 	wasDecoding := w.decodeEnabled
