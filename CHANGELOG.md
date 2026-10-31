@@ -11,7 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Linux arm64 release build for the Pi
 - MIDI Learn: CC and Note On mapping rows have a Learn button, as Knob rows do. Click it, then press or move the control on your DJ2GO2 or other MIDI controller within 10 seconds, and the row's type, channel and number fill in. It works running or stopped, and a press used for Learn doesn't run that control's action
 - Config backups: each save keeps the previous settings in `sparks-config-backups` (last 20), with a Restore control at the bottom of Settings
-- Update check: at startup Sparks asks GitHub for the latest release and shows an "Update available" link if it's newer. It skips pre-releases and shows nothing if there's no internet
+- Update check: at startup Sparks asks GitHub for the latest release and shows an "Update available" link if it's newer. It shows nothing if there's no internet
+- **Offer pre-release updates** in Settings, off by default: turn it on, after a warning, to be offered test builds as well as stable releases from the next startup
 - One-click update on Windows: while Sparks is stopped, **Update now** downloads the release, verifies it against `checksums.txt`, swaps the program and reopens Sparks. The previous version stays beside it as `barncat-sparks.exe.old`, and the old program is put back if the new one can't be installed or started
 - On Windows, opening Sparks a second time with the same config now shows "already running" and exits, so a second window can't save over your settings. A copy using its own `-config` file still runs
 

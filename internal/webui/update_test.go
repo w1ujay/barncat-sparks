@@ -402,3 +402,55 @@ func TestIndexWiresUpdateInstall(t *testing.T) {
 		}
 	}
 }
+
+// offerBoth serves a stable release and a newer pre-release.
+func offerBoth(t *testing.T) *update.Client {
+	t.Helper()
+	release := func(tag string, pre bool) string {
+		return fmt.Sprintf(`{"tag_name": %q, "html_url": "https://github.com/%s/releases/tag/%s", "prerelease": %v}`,
+			tag, update.Repo, tag, pre)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			fmt.Fprint(rw, release("v0.4.0", false))
+			return
+		}
+		fmt.Fprintf(rw, "[%s,%s]", release("v0.5.0-rc.1", true), release("v0.4.0", false))
+	}))
+	t.Cleanup(srv.Close)
+	return &update.Client{HTTP: srv.Client(), APIBase: srv.URL}
+}
+
+func TestUpdateCheckSkipsPrereleasesByDefault(t *testing.T) {
+	setVersion(t, "0.3.2")
+	w := &WebUI{updater: offerBoth(t), config: config.DefaultAppConfig()}
+	w.checkForUpdate(context.Background())
+	if s := getUpdateStatus(t, w); s.Latest != "0.4.0" {
+		t.Fatalf("status = %+v, want the stable release", s)
+	}
+}
+
+func TestUpdateCheckOffersPrereleasesWhenTurnedOn(t *testing.T) {
+	setVersion(t, "0.3.2")
+	cfg := config.DefaultAppConfig()
+	cfg.UpdatePrereleases = true
+	w := &WebUI{updater: offerBoth(t), config: cfg}
+	w.checkForUpdate(context.Background())
+	if s := getUpdateStatus(t, w); s.Latest != "0.5.0-rc.1" {
+		t.Fatalf("status = %+v, want the pre-release", s)
+	}
+}
+
+func TestIndexWiresPrereleaseSetting(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&WebUI{}).handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="updatePrereleases"`, `update_prereleases:`, `cfg.update_prereleases`,
+		`onchange="onPrereleaseChange(this)"`, `function onPrereleaseChange(`, `next time Sparks starts`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("webui.html missing %s", want)
+		}
+	}
+}

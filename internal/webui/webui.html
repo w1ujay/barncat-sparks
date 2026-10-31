@@ -252,6 +252,7 @@ a{color:#569cd6}
   </span>
   <label><input type="checkbox" id="minimizeToTray"> Minimize to system tray</label>
   <label><input type="checkbox" id="protocolTrace" onchange="onTraceChange()"> Protocol trace (verbose logging)</label>
+  <label><input type="checkbox" id="updatePrereleases" onchange="onPrereleaseChange(this)"> Offer pre-release updates (test builds)</label>
 </div>
 
 <!-- Decode section hidden — K4 may not support CW/RTTY decode
@@ -340,6 +341,7 @@ async function init() {
   document.getElementById('catListen').value = cfg.cat_listen || '';
   document.getElementById('radioServerListen').value = cfg.radio_server_listen || '';
   document.getElementById('ampUrl').value = cfg.amp_url || '';
+  document.getElementById('updatePrereleases').checked = !!cfg.update_prereleases;
   document.getElementById('hearthUrl').value = cfg.hearth_url || '';
   document.getElementById('hearthReplicaUrl').value = cfg.hearth_replica_url || '';
   document.getElementById('hearthToken').value = cfg.hearth_token || '';
@@ -763,6 +765,7 @@ function gatherConfig() {
     qk4_address: document.getElementById('qk4Address').value,
     minimize_to_tray: document.getElementById('minimizeToTray').checked,
     protocol_trace: document.getElementById('protocolTrace').checked,
+    update_prereleases: document.getElementById('updatePrereleases').checked,
     hearth_url: document.getElementById('hearthUrl').value.trim(),
     hearth_replica_url: document.getElementById('hearthReplicaUrl').value.trim(),
     hearth_token: document.getElementById('hearthToken').value,
@@ -971,6 +974,14 @@ async function watchUpdate() {
   updateInfo = s;
   renderUpdate();
   if (s.state in UPDATE_STEPS) setTimeout(watchUpdate, UPDATE_WATCH_MS);
+}
+
+// onPrereleaseChange warns when pre-releases are turned on.
+function onPrereleaseChange(box) {
+  if (!box.checked) return;
+  box.checked = confirm('Pre-releases are test builds. They can have bugs and may include features ' +
+    'never tried on real hardware, so don\'t rely on one for a contest.\n\n' +
+    'Offer them anyway? Save your settings; this takes effect the next time Sparks starts.');
 }
 
 function openRelease() {
