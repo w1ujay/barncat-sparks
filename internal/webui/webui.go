@@ -22,6 +22,7 @@ import (
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/lp100a"
 	"github.com/ujay/barncat-sparks/internal/midi"
+	"github.com/ujay/barncat-sparks/internal/update"
 )
 
 //go:embed webui.html
@@ -48,6 +49,14 @@ type WebUI struct {
 	radioServer  *cat.RadioServer
 	lp100        *lp100a.Driver
 	server       *http.Server
+	updater      *update.Client
+	openURL      func(string) // opens a page in the default browser
+
+	// Result of the startup update check (guarded by updateMu, separate from
+	// main mu, which Start holds while it connects to the radio)
+	updateMu      sync.Mutex
+	updateChecked bool
+	updateRelease *update.Release // nil unless a newer release exists
 
 	// Decode panel state (guarded by decodeMu, separate from main mu)
 	decodeMu      sync.Mutex
@@ -87,6 +96,8 @@ func RunWebUI(configPath string) {
 		cfgPath:    configPath,
 		cfgLoadErr: cfgLoadErr,
 		statusMsg:  "Stopped",
+		updater:    &update.Client{},
+		openURL:    openBrowser,
 	}
 
 	mux := http.NewServeMux()
@@ -108,6 +119,8 @@ func RunWebUI(configPath string) {
 	mux.HandleFunc("/api/decode", w.handleDecode)
 	mux.HandleFunc("/api/version", w.handleVersion)
 	mux.HandleFunc("/api/about", w.handleAbout)
+	mux.HandleFunc("/api/update", w.handleUpdateStatus)
+	mux.HandleFunc("/api/update/open", w.handleUpdateOpen)
 	mux.HandleFunc("/api/hearth/status", w.handleHearthStatus)
 	mux.HandleFunc("/api/hearth/test", w.handleHearthTest)
 	mux.HandleFunc("/api/hearth/k4", w.handleHearthK4)
@@ -134,6 +147,8 @@ func RunWebUI(configPath string) {
 		}
 		close(serverDone)
 	}()
+
+	go w.checkForUpdate(context.Background())
 
 	waitForGUI(url, "BarnCat Sparks "+config.Version, 760, 900) // blocks until exit
 

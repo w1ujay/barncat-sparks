@@ -84,11 +84,17 @@ a{color:#569cd6}
 .station-source.warn{color:#d7ba7d}
 .station-note{font-size:0.85em;color:#888;min-height:1.3em;margin-bottom:6px}
 .station-note.error{color:#f48771}
+.update-bar{margin-bottom:12px;padding:6px 12px;background:#252526;border:1px solid #333;
+  border-radius:3px;font-size:0.9em}
 </style>
 </head>
 <body>
 
 <h1 id="appTitle">BarnCat Sparks — WinKeyer &amp; MIDI Controller</h1>
+
+<div class="update-bar" id="updateBar" hidden>
+  <a href="#" id="updateLink" onclick="openRelease(); return false"></a>
+</div>
 
 <nav class="tabs">
   <button id="tabOperate" class="active" onclick="showTab('operate')">Operate</button>
@@ -888,6 +894,32 @@ function renderAbout(about) {
   el.innerHTML = html;
 }
 
+// --- Update check ---
+
+const UPDATE_POLL_MS = 2000;
+const UPDATE_POLL_TRIES = 12; // a little longer than the server's check timeout
+
+// pollUpdate waits for the startup check, which may finish after the page loads.
+async function pollUpdate(triesLeft = UPDATE_POLL_TRIES) {
+  let s;
+  try {
+    s = await (await fetch('/api/update')).json();
+  } catch(e) {
+    return;
+  }
+  if (!s.checked) {
+    if (triesLeft > 1) setTimeout(() => pollUpdate(triesLeft - 1), UPDATE_POLL_MS);
+    return;
+  }
+  if (!s.available) return;
+  document.getElementById('updateLink').textContent = 'Update available: v' + s.latest;
+  document.getElementById('updateBar').hidden = false;
+}
+
+function openRelease() {
+  fetch('/api/update/open', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+}
+
 // --- Station (lempster-hearth) ---
 // Everything hearth sends is rendered with textContent, never innerHTML.
 
@@ -1492,6 +1524,7 @@ async function wakeLaptop(name) {
 document.addEventListener('visibilitychange', wolTick);
 
 init();
+pollUpdate();
 </script>
 </body>
 </html>

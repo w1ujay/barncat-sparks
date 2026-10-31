@@ -64,6 +64,8 @@ internal/
     status.go                # Status (K4 + power-save), replica merge
     control.go               # K4Power, SetPowerSave
     wol.go                   # WolTargets, Wake (Pi-only wake-on-LAN)
+  update/                    # GitHub release check (stdlib only)
+    check.go                 # Client, Latest, Newer
   hidknob/                   # DROK/iWit USB knob input over WinUSB
     hidknob.go               # Mapping, State, errors, DecodeReport, event translation
     knob.go                  # Knob reader loop, Learn, Probe, LearnOnce
@@ -73,6 +75,7 @@ internal/
     webui.go                 # HTTP handlers, REST API
     hearth.go                # /api/hearth/* — hearth status + K4/power-save/WoL controls
     knob.go                  # /api/knob/* — knob status and Learn; knob start in Start
+    update.go                # /api/update — startup release check, release page link
     midilearn.go             # /api/midi/learn — MIDI Learn, via the driver or LearnOnce
     backup.go                # localOnly request guard; /api/config/backups and /restore
     instance.go              # Per-config single-instance lock name (instance_windows.go: named mutex; instance_other.go: stub)
@@ -100,7 +103,7 @@ N1MM Logger ↔ TCP ↔ CATServer (cat/) ──→ CATClient ──→ serial �
 
 ```
 cmd/barncat-sparks  →  webui, cat, keyer, midi, controls, config
-webui               →  cat, keyer, midi, controls, hidknob, config, hearth
+webui               →  cat, keyer, midi, controls, hidknob, config, hearth, update
 config              →  midi, hidknob  (ToMIDIConfig, ToKnobMappings)
 keyer               →  cat
 midi                →  controls
@@ -108,6 +111,7 @@ controls            →  cat
 hidknob             →  controls
 cat                 →  (stdlib only)
 hearth              →  (stdlib only)
+update              →  (stdlib only)
 ```
 
 ### Key Components
