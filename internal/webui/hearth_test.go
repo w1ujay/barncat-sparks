@@ -291,7 +291,7 @@ func TestIndexWiresStation(t *testing.T) {
 		`id="stationPanel"`, `id="hearthToken"`, `id="k4OnBtn"`, `id="psBtn"`,
 		`'/api/hearth/status'`, `'/api/hearth/test'`, `'/api/hearth/k4'`, `'/api/hearth/powersave'`,
 		`hearth_url:`, `hearth_replica_url:`, `hearth_token:`,
-		`id="operateView"`, `id="settingsView"`, `id="stationHint"`, `id="saveMsg"`, `showTab(`,
+		`id="operateView"`, `id="settingsView"`, `id="saveMsg"`, `showTab(`,
 		`id="laptopRows"`, `'/api/hearth/wol'`, `canUseHearth('wol')`,
 		`lastHearthKey`, `id="battRow"`, `id="battState"`, `describeBattery(`,
 	} {

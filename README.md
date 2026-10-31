@@ -222,6 +222,8 @@ RadioServer has no login, so only bind it to a private address such as a tailnet
 
 ## Station (lempster-hearth)
 
+Hearth is optional. Without it, the Station section stays hidden, and the Operate tab still shows whether your radio is answering. To set it up, open **Station control with lempster-hearth** in Settings.
+
 The Station section of the web UI shows the cabin K4's power state and its
 Starlink power-save status, and lets you power the K4 on/off and arm/disarm
 power-save. It talks to lempster-hearth running on the cabin's Pi, not to the
