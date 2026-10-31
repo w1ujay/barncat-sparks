@@ -16,10 +16,11 @@ import (
 // Repo is the GitHub repository releases come from.
 const Repo = "w1ujay/barncat-sparks"
 
-const (
-	defaultAPIBase = "https://api.github.com"
-	maxAPIBody     = 2 << 20
-)
+const maxAPIBody = 2 << 20
+
+// defaultAPIBase is a var so a test build can point at a local server with
+// -ldflags -X. Nothing at runtime can change where updates come from.
+var defaultAPIBase = "https://api.github.com"
 
 // Client talks to the GitHub releases API. The zero value uses the real API.
 type Client struct {

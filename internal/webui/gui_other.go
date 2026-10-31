@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-func waitForGUI(url, title string, width, height int) {
+// waitForGUI blocks until the window closes, a signal arrives or quit closes.
+func waitForGUI(url, title string, width, height int, quit <-chan struct{}) {
 	// Try app-mode browser (chromeless window), fall back to default browser
 	var browser *appBrowser
 	if browserPath := findBrowser(); browserPath != "" {
@@ -44,9 +45,14 @@ func waitForGUI(url, title string, width, height int) {
 			browser.kill()
 		case <-browser.done:
 			log.Println("sparks: browser closed, shutting down")
+		case <-quit:
+			browser.kill()
 		}
 	} else {
-		<-sig
-		log.Println("sparks: signal received, shutting down")
+		select {
+		case <-sig:
+			log.Println("sparks: signal received, shutting down")
+		case <-quit:
+		}
 	}
 }

@@ -22,18 +22,23 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ujay/barncat-sparks/internal/cat"
 	"github.com/ujay/barncat-sparks/internal/config"
 	"github.com/ujay/barncat-sparks/internal/controls"
 	"github.com/ujay/barncat-sparks/internal/keyer"
 	"github.com/ujay/barncat-sparks/internal/midi"
+	"github.com/ujay/barncat-sparks/internal/update"
 	"github.com/ujay/barncat-sparks/internal/webui"
 )
 
 // Version is defined in internal/config/about.go
 
 const defaultConfigFile = "sparks-config.json"
+
+// updateWaitTimeout bounds how long a just-updated copy waits for the old one.
+const updateWaitTimeout = 30 * time.Second
 
 func main() {
 	portName := flag.String("port", "", "Serial port for Winkeyer interface (e.g., COM5, /dev/pts/3)")
@@ -53,11 +58,18 @@ func main() {
 	radioLogRaw := flag.Bool("radio-log-raw", false, "Log every command RadioServer passes through to the radio")
 	noGUI := flag.Bool("nogui", false, "Run in headless mode (no GUI)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	waitPID := flag.Int("wait-pid", 0, "Wait for this process to exit before starting (used by the updater)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("sparks %s\n", config.Version)
 		return
+	}
+
+	// The updater starts this copy before the old one exits, and the
+	// single-instance check would refuse it until then.
+	if *waitPID != 0 {
+		update.WaitForExit(*waitPID, updateWaitTimeout)
 	}
 
 	// Handle -midi-list
