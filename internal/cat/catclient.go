@@ -646,14 +646,14 @@ func (c *CATClient) SetPower(tenths int) error {
 
 // BandUp moves to the next band.
 func (c *CATClient) BandUp() error {
-	log.Printf("CAT: BU;")
-	return c.Send("BU;")
+	log.Printf("CAT: BN+;")
+	return c.Send("BN+;")
 }
 
 // BandDown moves to the previous band.
 func (c *CATClient) BandDown() error {
-	log.Printf("CAT: BD;")
-	return c.Send("BD;")
+	log.Printf("CAT: BN-;")
+	return c.Send("BN-;")
 }
 
 // SelectVFO selects VFO A (0) or VFO B (1).

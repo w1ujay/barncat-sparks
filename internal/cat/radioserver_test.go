@@ -230,6 +230,8 @@ func TestRadioServerSetCommands(t *testing.T) {
 		{"RX;", "SendAbort()"},
 		{"BU;", "BandUp()"},
 		{"BD;", "BandDown()"},
+		{"BN+;", "BandUp()"},
+		{"BN-;", "BandDown()"},
 		{"FT0;", "SelectVFO(0)"},
 		{"FT1;", "SelectVFO(1)"},
 		{"SWT11;", "SwapVFO()"},

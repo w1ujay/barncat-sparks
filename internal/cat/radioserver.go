@@ -322,6 +322,16 @@ func (s *RadioServer) dispatchTyped(cmd string, conn net.Conn) (bool, error) {
 	case "BD":
 		s.radio.BandDown()
 
+	case "BN":
+		switch cmd {
+		case "BN+":
+			s.radio.BandUp()
+		case "BN-":
+			s.radio.BandDown()
+		default:
+			return false, nil
+		}
+
 	case "FT":
 		if len(cmd) != 3 || (cmd[2] != '0' && cmd[2] != '1') {
 			return false, nil

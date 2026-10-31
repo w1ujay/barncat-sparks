@@ -157,14 +157,14 @@ func TestBandUp(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
 	c.BandUp()
-	expectCmd(t, cmds, "BU")
+	expectCmd(t, cmds, "BN+")
 }
 
 func TestBandDown(t *testing.T) {
 	ln, cmds := mockCAT(t)
 	c := connectClient(t, ln)
 	c.BandDown()
-	expectCmd(t, cmds, "BD")
+	expectCmd(t, cmds, "BN-")
 }
 
 func TestSelectVFO(t *testing.T) {
