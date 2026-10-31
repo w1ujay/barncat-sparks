@@ -156,10 +156,10 @@ func TestFullBridgeScenario(t *testing.T) {
 	bridge.BandUp()
 	select {
 	case cmd := <-radioCmds:
-		if cmd != "BU" {
-			t.Errorf("radio got %q, want BU", cmd)
+		if cmd != "BN+" {
+			t.Errorf("radio got %q, want BN+", cmd)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for BU at radio")
+		t.Fatal("timed out waiting for BN+ at radio")
 	}
 }
