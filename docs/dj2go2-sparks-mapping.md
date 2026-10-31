@@ -1,8 +1,7 @@
 # Numark DJ2GO2 — Sparks MIDI Mapping Reference
 
 Physical controls on the DJ2GO2 mapped to their MIDI messages and suggested
-sparks actions. Derived from the Mixxx controller preset
-(`Numark-DJ2Go2-midi-map.xml`).
+sparks actions. Derived from the Mixxx controller preset for this device.
 
 The DJ2GO2 has two "decks" (A/B) — we use Deck A for main VFO / main RX
 controls and Deck B for sub VFO / sub RX.  The pad modes (Hot Cue, Beat Loop,

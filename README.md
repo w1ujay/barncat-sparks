@@ -235,7 +235,6 @@ need the Pi directly and are unavailable during a blackout.
 - Character echo timed to actual WPM using PARIS standard (1 dit = 1200/WPM ms)
 - CW text sent in word-sized chunks (split on spaces) for responsive abort
 - K4 CAT commands per the [K4 Programmer's Reference](https://elecraft.com/pages/programmers-reference-manuals)
-- See [`docs/winkeyer-protocol.md`](docs/winkeyer-protocol.md) for the full WinKeyer command reference
 
 ### Acknowledgment
 
