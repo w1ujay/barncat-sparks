@@ -41,12 +41,22 @@ type updateStatus struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// checkForUpdate asks GitHub once for the latest release. A failure is only
-// logged: a station with no internet sees nothing at all.
+// checkForUpdate asks GitHub once for the newest release the settings allow. A
+// failure is only logged: a station with no internet sees nothing at all.
 func (w *WebUI) checkForUpdate(ctx context.Context) {
+	w.mu.Lock()
+	prereleases := w.config != nil && w.config.UpdatePrereleases
+	w.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
 	defer cancel()
-	rel, err := w.updater.Latest(ctx)
+	var rel update.Release
+	var err error
+	if prereleases {
+		rel, err = w.updater.NewestIncludingPrereleases(ctx)
+	} else {
+		rel, err = w.updater.Latest(ctx)
+	}
 
 	w.updateMu.Lock()
 	defer w.updateMu.Unlock()
@@ -60,7 +70,7 @@ func (w *WebUI) checkForUpdate(ctx context.Context) {
 	}
 }
 
-// handleUpdateStatus reports the result of the startup check.
+// handleUpdateStatus reports the update check and any update in progress.
 func (w *WebUI) handleUpdateStatus(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)

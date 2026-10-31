@@ -65,7 +65,7 @@ internal/
     control.go               # K4Power, SetPowerSave
     wol.go                   # WolTargets, Wake (Pi-only wake-on-LAN)
   update/                    # GitHub release check and self-update (stdlib only)
-    check.go                 # Client, Latest, Newer
+    check.go                 # Client, Latest, NewestIncludingPrereleases, Newer
     install.go               # Stage (download + verify), Swap, RollBack, StartNewCopy
     wait_windows.go          # WaitForExit (wait_other.go: stub)
   hidknob/                   # DROK/iWit USB knob input over WinUSB
@@ -140,7 +140,7 @@ The `Winkeyer` struct uses three mutexes: `mu` guards protocol state and the CW 
 
 ### Self-Update
 
-`RunWebUI` starts one background `checkForUpdate`; the headless path never does, so the Pi stays manual. `/api/update/install` (Windows only) takes `WebUI.mu`, is refused while running, and sets `updating`, which makes Start refuse until the update fails. `runUpdate` stages `<exe>.new`, then under `swapMu` renames the running exe to `<exe>.old`, moves the new one into place and starts it with `-wait-pid=<this pid>`, which `main` waits on before `RunWebUI` takes the single-instance lock. A failed swap or start puts the old exe back. `Shutdown` takes `swapMu`, so closing the window can't exit between the two renames. On success `exit` closes `quit`, and a 5 s timer calls `os.Exit` if the normal close stalls, because the new copy is waiting. `webview.Terminate` posts `WM_QUIT` to the calling thread, so it must go through `Dispatch`. `update.defaultAPIBase` is a link-time var so a test build can use a fake server; nothing at runtime can redirect updates. `updateMu` guards the check result and progress, separately from `mu`, because Start holds `mu` while connecting; when both are needed, `mu` comes first.
+`RunWebUI` starts one background `checkForUpdate`; the headless path never does, so the Pi stays manual. With `update_prereleases` off the check uses `releases/latest`; with it on, `NewestIncludingPrereleases` picks the highest version from the release list. The setting is read once per check, so a change applies at the next startup. `/api/update/install` (Windows only) takes `WebUI.mu`, is refused while running, and sets `updating`, which makes Start refuse until the update fails. `runUpdate` stages `<exe>.new`, then under `swapMu` renames the running exe to `<exe>.old`, moves the new one into place and starts it with `-wait-pid=<this pid>`, which `main` waits on before `RunWebUI` takes the single-instance lock. A failed swap or start puts the old exe back. `Shutdown` takes `swapMu`, so closing the window can't exit between the two renames. On success `exit` closes `quit`, and a 5 s timer calls `os.Exit` if the normal close stalls, because the new copy is waiting. `webview.Terminate` posts `WM_QUIT` to the calling thread, so it must go through `Dispatch`. `update.defaultAPIBase` is a link-time var so a test build can use a fake server; nothing at runtime can redirect updates. `updateMu` guards the check result and progress, separately from `mu`, because Start holds `mu` while connecting; when both are needed, `mu` comes first.
 
 ### Serial Port Configuration
 

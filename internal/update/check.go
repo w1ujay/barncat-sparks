@@ -16,7 +16,7 @@ import (
 // Repo is the GitHub repository releases come from.
 const Repo = "w1ujay/barncat-sparks"
 
-const maxAPIBody = 2 << 20
+const maxAPIBody = 8 << 20 // the list form carries every release's notes
 
 // defaultAPIBase is a var so a test build can point at a local server with
 // -ldflags -X. Nothing at runtime can change where updates come from.
@@ -65,50 +65,98 @@ func (c *Client) get(ctx context.Context, url string) (*http.Response, error) {
 	return resp, nil
 }
 
-// Latest returns the newest stable release. GitHub's releases/latest already
-// skips drafts and pre-releases; they are refused here too, since an update
-// must never come from either.
-func (c *Client) Latest(ctx context.Context) (Release, error) {
+// apiRelease is one release as GitHub reports it.
+type apiRelease struct {
+	TagName    string `json:"tag_name"`
+	HTMLURL    string `json:"html_url"`
+	Prerelease bool   `json:"prerelease"`
+	Draft      bool   `json:"draft"`
+	Assets     []struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+// toRelease checks a release can be offered at all: never a draft, and its link
+// has to stay on the repo, because the page opens it in the browser.
+func (a apiRelease) toRelease() (Release, error) {
+	version := strings.TrimPrefix(a.TagName, "v")
+	if _, ok := parseVersion(version); !ok {
+		return Release{}, fmt.Errorf("release tag %q is not a version", a.TagName)
+	}
+	if a.Draft {
+		return Release{}, fmt.Errorf("release %s is a draft", a.TagName)
+	}
+	if !strings.HasPrefix(a.HTMLURL, "https://github.com/"+Repo+"/") {
+		return Release{}, fmt.Errorf("release link %q is not on %s", a.HTMLURL, Repo)
+	}
+	rel := Release{Version: version, URL: a.HTMLURL}
+	for _, asset := range a.Assets {
+		rel.Assets = append(rel.Assets, Asset{Name: asset.Name, URL: asset.URL})
+	}
+	return rel, nil
+}
+
+func (c *Client) apiURL(path string) string {
 	base := c.APIBase
 	if base == "" {
 		base = defaultAPIBase
 	}
-	resp, err := c.get(ctx, base+"/repos/"+Repo+"/releases/latest")
+	return base + "/repos/" + Repo + path
+}
+
+// Latest returns the newest stable release. GitHub's releases/latest already
+// skips drafts and pre-releases; they are refused here too.
+func (c *Client) Latest(ctx context.Context) (Release, error) {
+	resp, err := c.get(ctx, c.apiURL("/releases/latest"))
 	if err != nil {
 		return Release{}, err
 	}
 	defer resp.Body.Close()
 
-	var body struct {
-		TagName    string `json:"tag_name"`
-		HTMLURL    string `json:"html_url"`
-		Prerelease bool   `json:"prerelease"`
-		Draft      bool   `json:"draft"`
-		Assets     []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
+	var body apiRelease
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAPIBody)).Decode(&body); err != nil {
 		return Release{}, fmt.Errorf("reading release: %w", err)
 	}
-	version := strings.TrimPrefix(body.TagName, "v")
-	if _, ok := parseVersion(version); !ok {
-		return Release{}, fmt.Errorf("release tag %q is not a version", body.TagName)
+	rel, err := body.toRelease()
+	if err != nil {
+		return Release{}, err
 	}
-	if body.Prerelease || body.Draft || strings.Contains(version, "-") {
+	if body.Prerelease || strings.Contains(rel.Version, "-") {
 		return Release{}, errors.New("latest release is not a stable release")
 	}
-	// The page opens this link in the browser, so it must stay on the repo.
-	if !strings.HasPrefix(body.HTMLURL, "https://github.com/"+Repo+"/") {
-		return Release{}, fmt.Errorf("release link %q is not on %s", body.HTMLURL, Repo)
-	}
-
-	rel := Release{Version: version, URL: body.HTMLURL}
-	for _, a := range body.Assets {
-		rel.Assets = append(rel.Assets, Asset{Name: a.Name, URL: a.URL})
-	}
 	return rel, nil
+}
+
+// NewestIncludingPrereleases returns the highest version among recent releases,
+// stable or not. It goes by version, since GitHub's order follows dates and a
+// patch to an older line can be published last.
+func (c *Client) NewestIncludingPrereleases(ctx context.Context) (Release, error) {
+	resp, err := c.get(ctx, c.apiURL("/releases"))
+	if err != nil {
+		return Release{}, err
+	}
+	defer resp.Body.Close()
+
+	var list []apiRelease
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAPIBody)).Decode(&list); err != nil {
+		return Release{}, fmt.Errorf("reading releases: %w", err)
+	}
+	var best Release
+	found := false
+	for _, a := range list {
+		rel, err := a.toRelease()
+		if err != nil {
+			continue
+		}
+		if !found || Newer(best.Version, rel.Version) {
+			best, found = rel, true
+		}
+	}
+	if !found {
+		return Release{}, errors.New("no releases to offer")
+	}
+	return best, nil
 }
 
 // version is a parsed major.minor.patch[-prerelease].

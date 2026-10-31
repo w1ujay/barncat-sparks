@@ -35,6 +35,7 @@ type AppConfig struct {
 	MinimizeToTray    bool           `json:"minimize_to_tray"`
 	ProtocolTrace     bool           `json:"protocol_trace"`
 	KnobEnabled       bool           `json:"knob_enabled"`
+	UpdatePrereleases bool           `json:"update_prereleases,omitempty"`
 	Mappings          []MappingEntry `json:"mappings"`
 }
 

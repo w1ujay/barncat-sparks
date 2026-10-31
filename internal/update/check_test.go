@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,69 @@ func TestLatestWithNoNetwork(t *testing.T) {
 	c := &Client{HTTP: http.DefaultClient, APIBase: base}
 	if _, err := c.Latest(context.Background()); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+func listServer(t *testing.T, code int, body string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/"+Repo+"/releases" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		rw.WriteHeader(code)
+		rw.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &Client{HTTP: srv.Client(), APIBase: srv.URL}
+}
+
+func releaseJSON(tag string, extra string) string {
+	return `{"tag_name": "` + tag + `", "html_url": "https://github.com/` + Repo + `/releases/tag/` + tag + `"` + extra + `}`
+}
+
+func TestNewestIncludingPrereleases(t *testing.T) {
+	tests := []struct {
+		name string
+		body []string
+		want string
+	}{
+		{"pre-release ahead of stable", []string{releaseJSON("v0.3.2", ""), releaseJSON("v0.4.0-rc.3", `, "prerelease": true`)}, "0.4.0-rc.3"},
+		{"stable ahead of its own rc", []string{releaseJSON("v0.4.0-rc.3", `, "prerelease": true`), releaseJSON("v0.4.0", "")}, "0.4.0"},
+		{"by version, not list order", []string{releaseJSON("v0.4.0-rc.2", ""), releaseJSON("v0.4.0-rc.10", ""), releaseJSON("v0.3.2", "")}, "0.4.0-rc.10"},
+		{"skips drafts", []string{releaseJSON("v0.9.0", `, "draft": true`), releaseJSON("v0.4.0", "")}, "0.4.0"},
+		{"skips unreadable tags", []string{releaseJSON("nightly", ""), releaseJSON("v0.4.0", "")}, "0.4.0"},
+		{"skips links off the repo", []string{`{"tag_name": "v0.9.0", "html_url": "https://evil.example/x"}`, releaseJSON("v0.4.0", "")}, "0.4.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := listServer(t, http.StatusOK, "["+strings.Join(tt.body, ",")+"]")
+			rel, err := c.NewestIncludingPrereleases(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rel.Version != tt.want {
+				t.Fatalf("Version = %q, want %q", rel.Version, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewestIncludingPrereleasesFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		body string
+	}{
+		{"no releases", 200, `[]`},
+		{"only drafts", 200, "[" + releaseJSON("v0.9.0", `, "draft": true`) + "]"},
+		{"not json", 200, `<html>`},
+		{"rate limited", 403, `{"message": "rate limit"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rel, err := listServer(t, tt.code, tt.body).NewestIncludingPrereleases(context.Background()); err == nil {
+				t.Fatalf("got %+v, want an error", rel)
+			}
+		})
 	}
 }

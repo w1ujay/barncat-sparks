@@ -79,7 +79,9 @@ If Sparks can't read your settings file, it shows a warning and turns off Save a
 
 ### Updates
 
-At startup Sparks asks GitHub for the latest release and shows **Update available** at the top of the window if it's newer. Click the link for the release notes. Pre-releases are skipped, and with no internet nothing is shown.
+At startup Sparks asks GitHub for the latest release and shows **Update available** at the top of the window if it's newer. Click the link for the release notes. With no internet nothing is shown.
+
+Pre-releases are skipped unless you turn on **Offer pre-release updates** under Options in Settings. They are test builds and may include features that haven't been tried on real hardware, so Sparks warns you first. The setting takes effect the next time Sparks starts.
 
 On Windows, stop Sparks and click **Update now**. Sparks downloads the zip, verifies it against the release's `checksums.txt`, replaces `barncat-sparks.exe`, and reopens with your settings. Only the program is replaced: the `README`, `CHANGELOG`, `LICENSE` and notices beside it stay as they were.
 
