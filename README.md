@@ -1,8 +1,8 @@
 # BarnCat Sparks
 
-WinKeyer3 emulator and MIDI controller for the Elecraft K4 radio.
+WinKeyer3 emulator and MIDI controller for the Elecraft K4 radio, with remote support for the K3.
 
-BarnCat Sparks bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands. It also supports MIDI controllers (e.g., Numark DJ2GO2) for hands-on control of VFO tuning, volume, band switching, PTT, and more.
+BarnCat Sparks bridges contest logging software (N1MM Logger, etc.) that speaks the K1EL WinKeyer binary serial protocol to a K4 radio via TCP CAT commands. It also supports MIDI controllers (e.g., Numark DJ2GO2) and a USB tuning knob for hands-on control of VFO tuning, volume, band switching, PTT, and more.
 
 Part of the **BarnCat** family of ham radio software.
 
@@ -11,22 +11,29 @@ Part of the **BarnCat** family of ham radio software.
 ```
 Logger (N1MM, etc.) <-> virtual serial port <-> sparks <-> K4 radio (TCP or serial)
 MIDI controller (USB) <-> sparks ----------------/
+USB knob (WinUSB) <-> sparks --------------------/
 Browser / WebView2 <-> sparks (config/control) --/
 ```
 
 Both subsystems are optional and can run independently or together, sharing the same CAT connection to the K4.
 
+## Install
+
+Download the latest Windows zip from the [Releases](https://github.com/w1ujay/barncat-sparks/releases) page, unzip it, and run `barncat-sparks.exe`. A Linux arm64 build for the Raspberry Pi is published alongside it.
+
 ## Requirements
 
-- Go 1.27+
 - A virtual serial port pair (for WinKeyer mode):
   - **Windows:** [com0com](https://com0com.sourceforge.net/)
   - **Linux:** `socat`
-- Network access to your K4 (direct TCP port 9200, or via a CAT server)
+- Network access to your K4 (direct TCP port 9200, authenticated port 9205, or via a CAT server)
 - **MIDI:** Windows only (uses `winmm.dll` directly — no CGO or external libraries needed)
+- **USB knob:** Windows only, after a one-time driver swap (see [`docs/knob-setup.md`](docs/knob-setup.md))
 - **GUI:** Windows uses a native WebView2 window (preinstalled on Windows 10/11). Other platforms use Chrome/Edge `--app` mode or the default browser.
 
 ## Building
+
+Requires Go 1.27+.
 
 ```bash
 # Build for current platform
@@ -42,12 +49,17 @@ GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe ./cmd/barnc
 go install github.com/tc-hib/go-winres@latest
 (cd cmd/barncat-sparks && go-winres make)
 
+# Raspberry Pi (CGO_ENABLED=0 is required on WSL)
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o barncat-sparks-arm64 ./cmd/barncat-sparks/
+
 # Tests
 go test ./...
 go vet ./...
 ```
 
 No CGO required. The Windows build uses `winmm.dll` syscalls for MIDI and `jchv/go-webview2` (pure Go COM calls) for the native window — cross-compilation works with just `GOOS=windows`.
+
+Pushing a `v*` tag builds the Windows and Pi releases and publishes them to GitHub (`.github/workflows/release.yml`). Vendor manuals are kept locally in `docs/reference/`, which git ignores.
 
 ## Usage
 
@@ -57,7 +69,9 @@ No CGO required. The Windows build uses `winmm.dll` syscalls for MIDI and `jchv/
 barncat-sparks
 ```
 
-Double-click or run without flags to launch the web UI. Configure serial port, CAT address, MIDI device, and mappings in a single window. Settings are saved to `sparks-config.json`.
+Double-click or run without flags to launch the web UI. Configure serial port, CAT address, MIDI device, and mappings in a single window. Settings are saved to `sparks-config.json` next to the executable, including the K4 password and hearth token in plain text, so keep that file private.
+
+On Windows, only one copy can use a config at a time: opening a second shows "already running" and exits. To run a second copy on purpose, give it its own file with `-config`.
 
 ### Headless (CLI)
 
@@ -77,9 +91,15 @@ CLI mode activates when `-port`, `-midi`, or `-nogui` flags are present.
 | `-cat-transport` | `tcp`              | CAT transport: `tcp` or `serial`         |
 | `-cat-serial`    | *(optional)*       | Serial port for radio CAT (e.g., COM3)  |
 | `-cat-baud`      | `38400`            | Baud rate for serial CAT                 |
+| `-cat-password`  | *(optional)*       | K4 authentication password (port 9205)   |
 | `-cat-listen`    | *(optional)*       | TCP listen address for CAT relay server  |
+| `-radio-listen`  | *(optional)*       | TCP listen address for RadioServer       |
+| `-radio-model`   | `k4`               | `k4` or `k3` (`k3` needs serial CAT)     |
+| `-radio-log-raw` | `false`            | Log commands RadioServer passes through  |
 | `-speed`         | `25`               | Initial keyer speed in WPM               |
+| `-config`        | *(next to exe)*    | Path to the config file                  |
 | `-nogui`         | `false`            | Run in headless mode                     |
+| `-version`       | `false`            | Print version and exit                   |
 
 ### Setting Up Virtual Serial Ports
 
@@ -97,7 +117,11 @@ This prints two `/dev/pts/N` paths. Point your logger at one, barncat-sparks at 
 
 ## MIDI Controller Support
 
-BarnCat Sparks can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via the web UI or a JSON config file. MIDI support requires Windows (`winmm.dll`).
+BarnCat Sparks can connect a USB MIDI controller to control the K4. MIDI events (knob turns, button presses) are mapped to radio functions via the web UI or a JSON config file. MIDI support requires Windows (`winmm.dll`). See [`docs/dj2go2-sparks-mapping.md`](docs/dj2go2-sparks-mapping.md) for a full DJ2GO2 layout.
+
+### Learn
+
+To map a control in the web UI, tick your device under MIDI, open **Mappings**, and add a row. Pick an action, click **Learn**, then press or move the control within 10 seconds. The row's type, channel and number fill in. Learn works whether Sparks is running or stopped, and the press you use doesn't run that control's action. Save, then Stop and Start if Sparks is running, since mappings load at Start.
 
 ### Supported Actions
 
@@ -109,6 +133,14 @@ BarnCat Sparks can connect a USB MIDI controller to control the K4. MIDI events 
 | `volume_b`      | AF gain (sub)                  | CC (absolute)          |
 | `rf_gain`       | RF gain (main)                 | CC (absolute)          |
 | `rf_gain_b`     | RF gain (sub)                  | CC (absolute)          |
+| `rf_gain_adjust` | RF gain adjust (main)         | CC (relative)          |
+| `rf_gain_b_adjust` | RF gain adjust (sub)        | CC (relative)          |
+| `rf_gain_up`    | RF gain up (main)              | Note On                |
+| `rf_gain_down`  | RF gain down (main)            | Note On                |
+| `rf_gain_b_up`  | RF gain up (sub)               | Note On                |
+| `rf_gain_b_down` | RF gain down (sub)            | Note On                |
+| `rf_gain_toggle` | RF gain toggle (main)         | Note On                |
+| `rf_gain_b_toggle` | RF gain toggle (sub)        | Note On                |
 | `power`         | TX power (0.1W-110W)           | CC (absolute)          |
 | `speed`         | CW keyer speed (WPM)           | CC (absolute)          |
 | `filter_bw`     | Filter bandwidth (absolute)    | CC (absolute)          |
@@ -147,6 +179,24 @@ Edit `midi-config.json` to map your controller's MIDI events to actions:
   ]
 }
 ```
+
+### USB Tuning Knob
+
+A DROK/iWit USB knob can run the same actions as MIDI through **Knob** mapping rows, with its own Learn button. See [`docs/knob-setup.md`](docs/knob-setup.md).
+
+### MIDI Volume to QK4
+
+Under Options, **Route MIDI volume to QK4** sends MIDI volume to a QK4 instead of the radio.
+
+## Remote K3
+
+Sparks can run headless on a Raspberry Pi next to an Elecraft K3 and present it over the tailnet as a K4, so home Sparks and N1MM connect to it the same way:
+
+```bash
+barncat-sparks -nogui -radio-model k3 -cat-transport serial -cat-serial <port> -radio-listen <tailnet-ip>:9400
+```
+
+RadioServer has no login, so only bind it to a private address such as a tailnet IP. Update home Sparks and the Pi together. See [`docs/pi-setup.md`](docs/pi-setup.md).
 
 ## Station (lempster-hearth)
 
