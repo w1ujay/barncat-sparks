@@ -79,13 +79,14 @@ func LoadAppConfig(path string) (*AppConfig, error) {
 	return &cfg, nil
 }
 
-// SaveAppConfig writes an AppConfig to a JSON file.
+// SaveAppConfig writes an AppConfig to a JSON file, backing up the file it
+// replaces.
 func SaveAppConfig(path string, cfg *AppConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeConfig(path, data)
 }
 
 // GetMIDIDevices returns the configured MIDI device names, merging legacy

@@ -46,7 +46,7 @@ GOOS=windows go build -ldflags "-H windowsgui" -o barncat-sparks.exe ./cmd/barnc
 ./build.sh
 
 # Generate Windows icon/manifest resources (only needed after changing winres/)
-go install github.com/tc-hib/go-winres@latest
+go install github.com/tc-hib/go-winres@v0.3.3
 (cd cmd/barncat-sparks && go-winres make)
 
 # Raspberry Pi (CGO_ENABLED=0 is required on WSL)
@@ -70,6 +70,14 @@ barncat-sparks
 ```
 
 Double-click or run without flags to launch the web UI. Configure serial port, CAT address, MIDI device, and mappings in a single window. Settings are saved to `sparks-config.json` next to the executable, including the K4 password and hearth token in plain text, so keep that file private.
+
+### Backups
+
+Each save first copies the old settings into a `sparks-config-backups` folder beside the config, keeping the last 20 per config. To go back, stop Sparks, pick a date under **Backups** at the bottom of Settings, and click **Restore**. Your current settings are backed up first, so a restore can be undone. The backups hold your password and token too, so treat them like the config.
+
+If Sparks can't read your settings file, it shows a warning and turns off Save and Start instead of writing blank settings over it. Closing and reopening Sparks clears a temporary read problem, and restoring a backup fixes a damaged file.
+
+### Running a Second Copy
 
 On Windows, only one copy can use a config at a time: opening a second shows "already running" and exits. To run a second copy on purpose, give it its own file with `-config`.
 
